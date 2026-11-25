@@ -1,0 +1,39 @@
+[package]
+name = "aurora-browser"
+version = "1.5.0"
+description = "Aurora — быстрый стеклянный браузер с Rust-ядром"
+authors = ["Aurora Browser"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.90"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["wry", "unstable", "devtools"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+getrandom = "0.4"
+rusqlite = { version = "0.37", features = ["bundled"] }
+lz4_flex = "0.12"
+scraper = "0.24"
+csv = "1.4"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Security_Cryptography", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[features]
+# по умолчанию ничего лишнего — бинарник остаётся маленьким и быстрым
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 2
+panic = "abort"
+strip = true

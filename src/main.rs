@@ -1,0 +1,336 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod browser;
+mod commands;
+mod core;
+mod downloads;
+mod migration;
+mod pages;
+#[cfg(windows)]
+mod windows;
+
+use tauri::utils::config::WindowEffectsConfig;
+use tauri::utils::{WindowEffect, WindowEffectState};
+use tauri::{Manager, WebviewUrl};
+
+use crate::core::{store::AppState, urls};
+
+pub mod layout {
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::Mutex;
+    use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Rect};
+
+    use crate::core::store::AppState;
+
+    #[derive(Default)]
+    pub struct ActiveView(Mutex<Option<String>>);
+
+    #[derive(Default)]
+    pub struct ChromeBounds(Mutex<Option<(f64, f64)>>);
+
+    pub fn metrics(app: &AppHandle) -> tauri::Result<(f64, f64, f64, f64)> {
+        let state = app.state::<AppState>();
+        let window = app.get_window("main").ok_or(tauri::Error::WindowNotFound)?;
+        let scale = window.scale_factor()?;
+        let size = window.inner_size()?;
+        let width = f64::from(size.width) / scale;
+        let height = f64::from(size.height) / scale;
+        let (compact, show_tabs) = {
+            let settings = &state.store_guard().settings;
+            (settings.compact, settings.show_tab_row)
+        };
+        let strip = if state.media_fullscreen.load(Relaxed) != 0 {
+            0.0
+        } else {
+            let address = if compact { 42.0 } else { 52.0 };
+            address + if show_tabs { 44.0 } else { 0.0 }
+        };
+        let overlay = f64::from(state.ui_overlay.load(Relaxed)).min((height - strip).max(0.0));
+        Ok((width, height, strip, overlay))
+    }
+
+    pub fn relayout(app: &AppHandle) -> tauri::Result<()> {
+        let (width, height, strip, overlay) = metrics(app)?;
+        if width < 1.0 || height < 1.0 {
+            return Ok(());
+        }
+        let state = app.state::<AppState>();
+        let active = state.store_guard().active().map(|tab| tab.label.clone());
+        let visibility = app.state::<ActiveView>();
+        let (previous, active, changed) = {
+            let mut visible = visibility
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let desired = active.filter(|_| cfg!(windows) || overlay == 0.0 || strip == 0.0);
+            let changed = *visible != desired;
+            let previous = if changed { visible.clone() } else { None };
+            *visible = desired.clone();
+            (previous, desired, changed)
+        };
+        if let Some(view) = previous.and_then(|label| app.get_webview(&label)) {
+            view.hide()?;
+        }
+        if let Some(view) = active.and_then(|label| app.get_webview(&label)) {
+            view.set_bounds(Rect {
+                position: LogicalPosition::new(0.0, strip).into(),
+                size: LogicalSize::new(width, (height - strip).max(1.0)).into(),
+            })?;
+            if changed {
+                view.show()?;
+            }
+        }
+        position_chrome(app, width, strip, overlay, changed)
+    }
+
+    pub fn update_overlay(app: &AppHandle) -> tauri::Result<()> {
+        if !cfg!(windows) {
+            return relayout(app);
+        }
+        let (width, _, strip, overlay) = metrics(app)?;
+        position_chrome(app, width, strip, overlay, false)
+    }
+
+    fn position_chrome(
+        app: &AppHandle,
+        width: f64,
+        strip: f64,
+        overlay: f64,
+        _restack: bool,
+    ) -> tauri::Result<()> {
+        if let Some(ui) = app.get_webview("ui") {
+            let state = app.state::<ChromeBounds>();
+            let previous = *state.0.lock().unwrap_or_else(|error| error.into_inner());
+            if strip == 0.0 {
+                if previous.is_some() {
+                    ui.hide()?;
+                    *state.0.lock().unwrap_or_else(|error| error.into_inner()) = None;
+                }
+                return Ok(());
+            }
+            let bounds = (width.max(1.0), strip + overlay);
+            #[cfg(windows)]
+            if overlay > 0.0 && (_restack || previous != Some(bounds)) {
+                crate::windows::raise(&ui);
+            }
+            if previous != Some(bounds) {
+                ui.set_bounds(Rect {
+                    position: LogicalPosition::new(0.0, 0.0).into(),
+                    size: LogicalSize::new(bounds.0, bounds.1).into(),
+                })?;
+                if previous.is_none() {
+                    ui.show()?;
+                }
+                *state.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(bounds);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_theme(app: &AppHandle) {
+        if let Some(window) = app.get_window("main") {
+            let state = app.state::<AppState>();
+            let light = state.store_guard().settings.theme == "light";
+            let _ = window.set_theme(Some(if light {
+                tauri::Theme::Light
+            } else {
+                tauri::Theme::Dark
+            }));
+        }
+    }
+}
+
+fn run() -> tauri::Result<()> {
+    let invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        commands::navigate,
+        commands::tab_action,
+        commands::add_tab,
+        commands::activate_tab,
+        commands::close_tab,
+        commands::move_tab,
+        commands::reopen_tab,
+        commands::ui_state,
+        commands::save_settings,
+        commands::set_ui_overlay,
+        commands::glass_frame,
+        commands::toggle_bookmark,
+        commands::remove_bookmark_by_id,
+        commands::history_clear,
+        commands::suggest,
+        commands::plugins_list,
+        commands::plugin_set_enabled,
+        commands::plugin_get_code,
+        commands::plugin_set_code,
+        commands::plugins_open_folder,
+        commands::export_data,
+        commands::import_data,
+        commands::browser_sources,
+        commands::import_browser,
+        commands::import_bookmark_html,
+        commands::window_ctl,
+        commands::window_state,
+        commands::win_drag,
+        commands::focus_chrome,
+        commands::downloads_state,
+        commands::download_action,
+        commands::open_downloads_folder,
+    ];
+    #[cfg(windows)]
+    let vault_invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        commands::import_password_csv,
+        commands::password_accounts,
+        commands::fill_password,
+    ];
+    tauri::Builder::default()
+        .register_uri_scheme_protocol("aurora", |ctx, request| {
+            pages::handle(ctx.app_handle(), ctx.webview_label(), request)
+        })
+        .setup(|app| {
+            let data_dir = match std::env::var_os("AURORA_DATA_DIR") {
+                Some(path) => std::path::PathBuf::from(path),
+                None => app.path().app_data_dir()?,
+            };
+            let state = AppState::init(data_dir)?;
+            let tab = state
+                .store_guard()
+                .active()
+                .cloned()
+                .ok_or("Нет начальной вкладки")?;
+            let chrome_profile = state.data_dir.join("Chrome");
+            app.manage(state);
+            app.manage(layout::ActiveView::default());
+            app.manage(layout::ChromeBounds::default());
+
+            let mut builder = tauri::window::WindowBuilder::new(app, "main")
+                .title("Aurora")
+                .inner_size(1280.0, 820.0)
+                .min_inner_size(660.0, 450.0)
+                .decorations(false)
+                .transparent(cfg!(any(windows, target_os = "macos")))
+                .resizable(true)
+                .center()
+                .shadow(true)
+                .visible(false);
+            if cfg!(windows) {
+                builder = builder.effects(WindowEffectsConfig {
+                    effects: vec![WindowEffect::Mica],
+                    state: Some(WindowEffectState::Active),
+                    radius: None,
+                    color: None,
+                    interactive: false,
+                });
+            }
+            let window = builder.build()?;
+            layout::set_theme(app.handle());
+            let (width, _, strip, _) = layout::metrics(app.handle())?;
+            let _ui = window.add_child(
+                tauri::webview::WebviewBuilder::new("ui", WebviewUrl::App("strip.html".into()))
+                    .accept_first_mouse(true)
+                    .data_directory(chrome_profile)
+                    .transparent(true)
+                    .on_navigation(urls::is_chrome)
+                    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny),
+                tauri::LogicalPosition::new(0.0, 0.0),
+                tauri::LogicalSize::new(width, strip),
+            )?;
+            #[cfg(windows)]
+            crate::windows::install_chrome_downloads(&_ui);
+
+            let handle = app.handle().clone();
+            window.on_window_event(move |event| {
+                if matches!(
+                    event,
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                ) {
+                    let _ = layout::relayout(&handle);
+                }
+            });
+
+            window.show()?;
+            browser::defer(app.handle(), move |app| {
+                if let Err(error) = browser::activate(&app, tab.id, false) {
+                    browser::emit(&app, "au://notice", error);
+                }
+            });
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                let state = window.state::<AppState>();
+                {
+                    let store = state.store_guard();
+                    state.save_settings(&store);
+                    state.save_tabs(&store);
+                    state.save_history(&store);
+                    state.save_bookmarks(&store);
+                }
+                state.save_downloads();
+                state.flush_saves();
+            }
+        })
+        .invoke_handler(move |request: tauri::ipc::Invoke<tauri::Wry>| {
+            if request.message.webview_ref().label() == "ui" {
+                #[cfg(windows)]
+                if matches!(
+                    request.message.command(),
+                    "import_password_csv" | "password_accounts" | "fill_password"
+                ) {
+                    return vault_invoke(request);
+                }
+                invoke(request)
+            } else {
+                request
+                    .resolver
+                    .reject("Команда доступна только интерфейсу Aurora");
+                true
+            }
+        })
+        .run(tauri::generate_context!())
+}
+
+fn main() {
+    let mut args = std::env::args_os().skip(1);
+    if let Some(command) = args.next() {
+        if command == "--import-brave" {
+            print_migration_result(migration::migrate_brave());
+            return;
+        }
+        #[cfg(windows)]
+        if command == "--import-passwords" {
+            let result = args
+                .next()
+                .ok_or("Укажите файл CSV".into())
+                .and_then(|path| migration::passwords::import_file(std::path::Path::new(&path)));
+            print_migration_result(result);
+            return;
+        }
+    }
+    if let Err(error) = run() {
+        eprintln!("Aurora: {error}");
+        #[cfg(windows)]
+        {
+            use ::windows::core::HSTRING;
+            use ::windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            let message = HSTRING::from(format!("Не удалось запустить Aurora.\n\n{error}"));
+            let title = ::windows::core::w!("Aurora");
+            // No application window is available after a startup error.
+            unsafe { MessageBoxW(None, &message, title, MB_OK | MB_ICONERROR) };
+        }
+        std::process::exit(1);
+    }
+}
+
+fn print_migration_result(result: Result<impl serde::Serialize, String>) {
+    match result {
+        Ok(summary) => println!(
+            "{}",
+            serde_json::to_string(&summary).expect("valid summary")
+        ),
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    }
+}

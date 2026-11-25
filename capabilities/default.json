@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "aurora-chrome",
+  "description": "Разрешения для хрома Aurora (webview ui): команды приложения и нативное управление окном. Внешние страницы не получают доступ к IPC.",
+  "local": true,
+  "webviews": ["ui"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

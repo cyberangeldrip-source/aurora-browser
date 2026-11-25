@@ -1,0 +1,14 @@
+/target/
+/gen/
+/.vscode/
+/.idea/
+/.env
+/.env.*
+*.csv
+*.dpapi
+*.sqlite
+*.sqlite-*
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini

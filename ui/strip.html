@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aurora</title>
+  <link rel="stylesheet" href="chrome.css">
+  <script src="liquid.js" defer></script>
+  <script src="strip.js" defer></script>
+</head>
+<body>
+  <header id="chrome" aria-label="Панель браузера">
+    <div class="tabs-row" id="tabs-row">
+      <button type="button" class="brand" id="brand" title="Домашняя страница">
+        <img src="aurora-mark.svg" alt="" width="27" height="27"><span>Aurora</span>
+      </button>
+      <div class="tabs-scroll" id="tabs-scroll" aria-label="Вкладки" data-drag><div id="tabs" role="tablist"></div></div>
+      <button type="button" class="icon-button add-tab" id="newtab" data-icon="plus" title="Новая вкладка (Ctrl+T)"></button>
+      <div class="drag-space" data-drag></div>
+      <div class="window-controls" id="window-controls">
+        <button type="button" class="window-button" data-window="minimize" data-icon="minus" title="Свернуть"></button>
+        <button type="button" class="window-button" data-window="maximize" data-icon="square" title="Развернуть"></button>
+        <button type="button" class="window-button close-window" data-window="close" data-icon="close" title="Закрыть окно"></button>
+      </div>
+    </div>
+
+    <div class="toolbar" id="toolbar">
+      <div class="tool-group">
+        <button type="button" class="icon-button" id="back" data-action="back" data-icon="back" title="Назад (Alt+←)"></button>
+        <button type="button" class="icon-button" id="forward" data-action="forward" data-icon="forward" title="Вперёд (Alt+→)"></button>
+        <button type="button" class="icon-button" id="reload" data-action="reload" data-icon="reload" title="Обновить (Ctrl+R)"></button>
+        <button type="button" class="icon-button" id="home" data-action="home" data-icon="home" title="Домашняя страница"></button>
+        <button type="button" class="icon-button" hidden id="tab-list" data-icon="tabs" title="Все вкладки"></button>
+      </div>
+      <form id="omnibox" role="search">
+        <span id="site-icon" title="Адрес сайта" aria-hidden="true"></span>
+        <input id="address" aria-label="Поиск или адрес" placeholder="Поиск или адрес" type="text" autocomplete="off" spellcheck="false" aria-controls="suggest" aria-autocomplete="list">
+        <button type="button" class="icon-button star" id="bookmark" data-icon="star" title="Добавить в закладки (Ctrl+D)" aria-pressed="false"></button>
+        <div class="progress" id="progress" hidden></div>
+      </form>
+      <div class="tool-group">
+        <button type="button" class="icon-button" id="downloads-button" data-action="downloads" data-icon="download" title="Загрузки (Ctrl+J)" aria-expanded="false" aria-controls="downloads"></button>
+        <button type="button" class="icon-button" id="menu-button" data-icon="menu" title="Меню Aurora" aria-expanded="false" aria-controls="menu"></button>
+      </div>
+      <div id="compact-window-slot" hidden></div>
+    </div>
+  </header>
+
+  <div id="overlay-backdrop" hidden></div>
+  <div id="suggest" class="glass" role="listbox" aria-label="Подсказки" hidden><div id="suggest-items"></div></div>
+  <div id="tab-context" class="menu glass" role="menu" aria-label="Действия с вкладкой" hidden>
+    <div class="menu-items">
+      <button type="button" role="menuitem" data-tab-action="select" data-icon="arrow">Перейти к вкладке</button>
+      <button type="button" role="menuitem" data-tab-action="duplicate" data-icon="restore">Дублировать вкладку</button>
+      <button type="button" role="menuitem" data-tab-action="copy" data-icon="link">Копировать адрес</button>
+      <hr>
+      <button type="button" role="menuitem" data-tab-action="close" data-icon="close">Закрыть вкладку</button>
+    </div>
+  </div>
+  <div id="menu" class="menu glass" aria-label="Меню Aurora" hidden>
+    <div class="menu-items">
+      <button type="button" data-command="newtab" data-icon="plus">Новая вкладка <kbd>Ctrl+T</kbd></button>
+      <button type="button" data-command="private" data-icon="private">Приватная вкладка <kbd>Ctrl+Shift+N</kbd></button>
+      <button type="button" data-command="reopen" data-icon="restore">Восстановить вкладку <kbd>Ctrl+Shift+T</kbd></button>
+      <button type="button" data-command="tab-list" data-icon="tabs">Все вкладки</button>
+      <hr>
+      <button type="button" data-command="bookmarks" data-icon="star">Закладки</button>
+      <button type="button" data-command="history" data-icon="history">История <kbd>Ctrl+H</kbd></button>
+      <button type="button" data-command="downloads" data-icon="download">Загрузки <kbd>Ctrl+J</kbd></button>
+      <hr>
+      <div class="menu-zoom">
+        <span>Масштаб страницы</span>
+        <button type="button" data-action="zoom-out" data-icon="minus" title="Уменьшить страницу"></button>
+        <button type="button" data-action="zoom-reset" id="zoom-label" title="Сбросить масштаб">100%</button>
+        <button type="button" data-action="zoom-in" data-icon="plus" title="Увеличить страницу"></button>
+      </div>
+      <button type="button" data-command="fullscreen" data-icon="fullscreen">Во весь экран <kbd>F11</kbd></button>
+      <button type="button" data-command="settings" data-icon="settings">Настройки <kbd>Ctrl+,</kbd></button>
+      <button type="button" data-command="transfer" data-icon="import">Перенос данных</button>
+    </div>
+  </div>
+
+  <section id="downloads" class="menu glass" aria-labelledby="downloads-title" hidden>
+    <header class="downloads-head">
+      <h2 id="downloads-title">Загрузки</h2>
+      <button type="button" class="icon-button" id="downloads-folder" data-icon="folder" title="Открыть папку загрузок"></button>
+      <button type="button" class="icon-button" id="downloads-close" data-icon="close" title="Закрыть загрузки (Esc)"></button>
+    </header>
+    <div id="download-rows" class="download-rows" aria-label="Список загрузок"></div>
+    <p id="downloads-empty" class="muted">Загруженные файлы появятся здесь.</p>
+  </section>
+
+  <section id="panel-overlay" hidden>
+    <div class="panel glass" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+      <aside class="panel-sidebar">
+        <div class="panel-brand"><img src="aurora-mark.svg" alt="" width="29" height="29"> Aurora</div>
+        <nav aria-label="Разделы Aurora">
+          <button type="button" data-view="settings" data-icon="settings">Настройки</button>
+          <button type="button" data-view="tabs" data-icon="tabs">Вкладки</button>
+          <button type="button" data-view="bookmarks" data-icon="star">Закладки</button>
+          <button type="button" data-view="transfer" data-icon="import">Перенос данных</button>
+          <button type="button" data-view="plugins" data-icon="plugin">Плагины</button>
+          <button type="button" data-view="about" data-icon="info">О браузере</button>
+        </nav>
+      </aside>
+      <div class="panel-content">
+        <header class="panel-head"><h1 id="panel-title">Настройки</h1><button type="button" class="icon-button" id="panel-close" data-icon="close" title="Закрыть (Esc)"></button></header>
+        <div class="panel-body" id="panel-body">
+          <div class="view" id="view-settings">
+            <h2>Внешний вид</h2>
+            <div class="settings-card">
+              <label class="setting-row" for="theme"><span>Тема</span><select id="theme" data-setting="theme"><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label>
+              <div class="setting-row"><label for="accent">Цвет акцента</label><div id="swatches"><input type="color" id="accent" data-setting="accent" aria-label="Свой цвет"></div></div>
+              <label class="setting-row" for="glass-opacity"><span>Плотность стекла</span><input type="range" id="glass-opacity" data-setting="glass_opacity" min=".05" max=".45" step=".01"></label>
+              <label class="setting-row" for="blur-strength"><span>Размытие</span><input type="range" id="blur-strength" data-setting="blur_strength" min="4" max="64" step="1"></label>
+              <label class="setting-row" for="animations"><span>Анимации</span><input type="checkbox" class="switch" id="animations" data-setting="animations"></label>
+              <label class="setting-row" for="animated-wallpaper"><span>Живой фон новой вкладки</span><input type="checkbox" class="switch" id="animated-wallpaper" data-setting="animated_wallpaper"></label>
+              <label class="setting-row" for="ui-scale"><span>Масштаб интерфейса</span><input type="range" id="ui-scale" data-setting="ui_scale" min=".85" max="1.15" step=".05"></label>
+              <label class="setting-row" for="compact"><span>Компактная панель</span><input type="checkbox" class="switch" id="compact" data-setting="compact"></label>
+              <label class="setting-row" for="show-tabs"><span>Показывать ряд вкладок</span><input type="checkbox" class="switch" id="show-tabs" data-setting="show_tab_row"></label>
+            </div>
+            <h2>Поиск и сеанс</h2>
+            <div class="settings-card">
+              <label class="setting-row" for="engine"><span>Поисковая система</span><select id="engine" data-setting="search_engine"><option value="google">Google</option><option value="yandex">Яндекс</option><option value="duckduckgo">DuckDuckGo</option><option value="bing">Bing</option></select></label>
+              <label class="setting-row" for="homepage"><span>Домашняя страница</span><input type="text" id="homepage" data-setting="homepage" placeholder="aurora://home" spellcheck="false"></label>
+              <label class="setting-row" for="restore-session"><span>Открывать вкладки прошлого сеанса</span><input type="checkbox" class="switch" id="restore-session" data-setting="restore_session"></label>
+              <label class="setting-row" for="record-history"><span>Записывать историю посещений</span><input type="checkbox" class="switch" id="record-history" data-setting="record_history"></label>
+              <label class="setting-row" for="retention"><span>Хранить историю</span><select id="retention" data-setting="history_retention_days" data-number><option value="7">7 дней</option><option value="30">30 дней</option><option value="90">90 дней</option><option value="0">Бессрочно</option></select></label>
+            </div>
+            <h2>Данные</h2>
+            <div class="settings-card data-card">
+              <div class="button-row">
+                <button type="button" class="pill" id="export">Экспорт JSON</button>
+                <button type="button" class="pill" id="choose-import">Открыть JSON</button>
+                <button type="button" class="pill" id="import">Импорт</button>
+                <button type="button" class="pill danger" id="clear">Очистить историю</button>
+              </div>
+              <input type="file" id="import-file" accept=".json,application/json" hidden>
+              <textarea id="data-io" rows="3" aria-label="Данные Aurora в формате JSON" placeholder="Вставьте JSON или откройте файл"></textarea>
+            </div>
+          </div>
+
+          <div class="view" id="view-tabs" hidden>
+            <div class="button-row"><button type="button" class="pill" data-command="newtab">Новая вкладка</button><button type="button" class="pill" data-command="reopen">Вернуть закрытую</button></div>
+            <div class="collection" id="tab-items"></div>
+          </div>
+          <div class="view" id="view-bookmarks" hidden>
+            <input class="filter-input" type="search" id="bookmark-filter" aria-label="Поиск по закладкам" placeholder="Поиск по закладкам">
+            <div class="collection" id="bookmarks"></div>
+          </div>
+          <div class="view" id="view-transfer" hidden>
+            <section class="settings-card transfer-card">
+              <h2>Из браузера</h2>
+              <div class="transfer-source">
+                <label for="migration-source">Профиль браузера</label>
+                <select id="migration-source"><option value="">Поиск браузеров…</option></select>
+                <button type="button" class="pill" id="migration-rescan">Обновить</button>
+              </div>
+              <div class="transfer-options">
+                <label><input type="checkbox" id="migration-tabs" checked> Вкладки</label>
+                <label><input type="checkbox" id="migration-history" checked> История</label>
+                <label><input type="checkbox" id="migration-bookmarks" checked> Закладки</label>
+                <label><input type="checkbox" id="migration-downloads" checked> Журнал загрузок</label>
+                <label><input type="checkbox" id="migration-retention" checked> Сохранить старые посещения</label>
+              </div>
+              <button type="button" class="pill" id="migration-start" disabled>Перенести выбранное</button>
+              <p class="muted transfer-status" id="migration-status" role="status" hidden></p>
+            </section>
+            <section class="settings-card transfer-card">
+              <h2>Из файлов</h2>
+              <div class="button-row">
+                <button type="button" class="pill" id="migration-html">Закладки HTML</button>
+                <button type="button" class="pill" id="migration-csv">Пароли CSV</button>
+              </div>
+              <input type="file" id="migration-html-file" accept=".html,.htm,text/html" hidden>
+              <input type="file" id="migration-csv-file" accept=".csv,text/csv" hidden>
+              <p class="muted" id="migration-vault-info">Aurora хранит пароли локально с защитой Windows. После переноса удалите CSV, если он больше не нужен.</p>
+              <p class="muted transfer-status" id="migration-file-status" role="status" hidden></p>
+            </section>
+            <section class="settings-card transfer-card" id="migration-accounts">
+              <h2>Вход на текущий сайт</h2>
+              <p class="muted" id="migration-accounts-empty">Откройте HTTPS-страницу входа для выбора сохранённого аккаунта.</p>
+              <div id="migration-account-list" class="collection"></div>
+            </section>
+          </div>
+          <div class="view" id="view-plugins" hidden>
+            <p class="muted">Локальные плагины могут читать и изменять открытые сайты. После изменения обновите нужную вкладку.</p>
+            <div class="collection" id="plugins"></div>
+            <div class="button-row"><button type="button" class="pill" id="plugins-folder">Открыть папку плагинов</button><button type="button" class="pill" id="plugins-refresh">Обновить список</button></div>
+            <div class="settings-card plugin-editor" id="plugin-editor" hidden>
+              <h2 id="plugin-name"></h2>
+              <label for="plugin-css">CSS</label><textarea id="plugin-css" rows="5" spellcheck="false"></textarea>
+              <label for="plugin-js">JavaScript</label><textarea id="plugin-js" rows="5" spellcheck="false"></textarea>
+              <button type="button" class="pill" id="plugin-save">Сохранить код</button>
+            </div>
+          </div>
+          <div class="view" id="view-about" hidden>
+            <dl class="settings-card details">
+              <dt>Версия</dt><dd id="version"></dd>
+              <dt>Движок страниц</dt><dd id="engine-name"></dd>
+              <dt>Каталог данных</dt><dd id="data-dir"></dd>
+            </dl>
+            <h2>Горячие клавиши</h2>
+            <dl class="settings-card details">
+              <dt>Новая вкладка / закрыть</dt><dd>Ctrl+T / Ctrl+W</dd>
+              <dt>Приватная вкладка</dt><dd>Ctrl+Shift+N</dd>
+              <dt>Восстановить вкладку</dt><dd>Ctrl+Shift+T</dd>
+              <dt>Переключить вкладку</dt><dd>Ctrl+Tab / Ctrl+1–9</dd>
+              <dt>Выбрать адрес</dt><dd>Ctrl+L</dd>
+              <dt>Поиск на странице</dt><dd>Ctrl+F</dd>
+              <dt>Обновить</dt><dd>Ctrl+R</dd>
+              <dt>Масштаб страницы</dt><dd>Ctrl+«+» / «−» / «0»</dd>
+              <dt>История / загрузки</dt><dd>Ctrl+H / Ctrl+J</dd>
+            </dl>
+            <div class="button-row"><button type="button" class="pill" data-command="devtools">Инструменты разработчика</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <dialog id="confirm">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <div class="button-row"><button type="submit" class="pill" value="cancel" autofocus>Отмена</button><button type="submit" class="pill danger" id="confirm-action" value="accept"></button></div>
+    </form>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
