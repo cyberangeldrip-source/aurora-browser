@@ -8,6 +8,7 @@
   document.body.append(hint);
   let trigger;
   let timer;
+  const autoLabels = new WeakSet();
 
   function migrate(node) {
     const title = node.getAttribute('title');
@@ -15,8 +16,9 @@
     node.removeAttribute('title');
     if (title) {
       node.dataset.tooltip = title;
-      if (node.matches('button, a') && !node.hasAttribute('aria-label') && !node.textContent.trim()) {
+      if (autoLabels.has(node) || (node.matches('button, a') && !node.hasAttribute('aria-label') && !node.textContent.trim())) {
         node.setAttribute('aria-label', title);
+        autoLabels.add(node);
       }
     } else {
       delete node.dataset.tooltip;
@@ -70,4 +72,5 @@
   });
   for (const type of ['pointerdown', 'keydown', 'scroll']) document.addEventListener(type, hide, true);
   window.addEventListener('blur', hide);
+  window.addEventListener('resize', hide);
 })();

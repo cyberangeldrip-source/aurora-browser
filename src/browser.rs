@@ -450,19 +450,29 @@ pub fn refresh_internal(app: &AppHandle) {
     }
 }
 
-pub fn set_wallpaper(app: &AppHandle, enabled: bool) {
-    let script = format!(
-        "document.getElementById('live-wallpaper')?.setAttribute('data-enabled', '{enabled}')"
-    );
-    for (label, view) in app.webviews() {
-        if label.starts_with("tab-")
+fn home_webviews(app: &AppHandle) -> impl Iterator<Item = Webview> {
+    app.webviews().into_iter().filter_map(|(label, view)| {
+        (label.starts_with("tab-")
             && view
                 .url()
                 .ok()
                 .and_then(|url| urls::internal_path(url.as_str()))
-                .is_some_and(|path| matches!(path.as_str(), "" | "home"))
-        {
-            let _ = view.eval(&script);
-        }
+                .is_some_and(|path| matches!(path.as_str(), "" | "home")))
+        .then_some(view)
+    })
+}
+
+pub fn refresh_home(app: &AppHandle) {
+    for view in home_webviews(app) {
+        let _ = view.eval("document.dispatchEvent(new Event('aurora-bookmarks-changed'))");
+    }
+}
+
+pub fn set_wallpaper(app: &AppHandle, enabled: bool) {
+    let script = format!(
+        "document.getElementById('live-wallpaper')?.setAttribute('data-enabled', '{enabled}')"
+    );
+    for view in home_webviews(app) {
+        let _ = view.eval(&script);
     }
 }

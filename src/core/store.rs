@@ -395,6 +395,39 @@ impl Store {
         self.bookmarks.len() != before
     }
 
+    pub fn edit_bookmark(
+        &mut self,
+        id: u64,
+        title: String,
+        folder: Vec<String>,
+    ) -> Result<bool, String> {
+        let bookmark = self
+            .bookmarks
+            .iter_mut()
+            .find(|bookmark| bookmark.id == id)
+            .ok_or("Закладка больше недоступна")?;
+        let title = title.trim();
+        if title.is_empty() || (title != bookmark.title && title.chars().count() > 512) {
+            return Err("Введите название закладки до 512 символов".into());
+        }
+        if folder != bookmark.folder
+            && (folder.len() > 32
+                || folder.iter().any(|name| {
+                    name.trim().is_empty()
+                        || name.chars().any(char::is_control)
+                        || name.chars().count() > 256
+                }))
+        {
+            return Err("Укажите до 32 папок с названиями до 256 символов".into());
+        }
+        if bookmark.title == title && bookmark.folder == folder {
+            return Ok(false);
+        }
+        bookmark.title = title.to_owned();
+        bookmark.folder = folder;
+        Ok(true)
+    }
+
     pub fn allocate_tab(&mut self, url: String) -> Tab {
         while self.tabs.tabs.iter().any(|tab| tab.id == self.next_tab_id) {
             self.next_tab_id = self.next_tab_id.wrapping_add(1).max(1);
@@ -630,6 +663,29 @@ mod tests {
         assert_eq!(entries.last().unwrap().url, "https://example.org/latest");
         drop(db);
         drop(state);
+    }
+
+    #[test]
+    fn editing_bookmark_keeps_its_address_and_id() {
+        let mut store = Store::load(
+            &std::env::temp_dir().join("aurora-bookmark-edit-test-empty-profile"),
+            Vec::new(),
+        );
+        store.replace_bookmarks(Vec::new());
+        store.add_bookmark("https://example.org/".to_owned(), "Old name");
+        let id = store.bookmarks[0].id;
+        let folder = vec!["Работа".to_owned(), "Проект / Код".to_owned()];
+        assert!(store
+            .edit_bookmark(id, "  New name  ".to_owned(), folder.clone())
+            .unwrap());
+        assert!(store
+            .edit_bookmark(id, "Bad edit".to_owned(), vec!["".to_owned()])
+            .is_err());
+        let bookmark = &store.bookmarks[0];
+        assert_eq!(bookmark.id, id);
+        assert_eq!(bookmark.url, "https://example.org/");
+        assert_eq!(bookmark.title, "New name");
+        assert_eq!(bookmark.folder, folder);
     }
 
     #[test]

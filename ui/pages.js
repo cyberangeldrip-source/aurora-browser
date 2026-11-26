@@ -26,6 +26,24 @@ if (startSearch) {
   });
 }
 
+const shortcuts = document.querySelector('.shortcuts');
+if (shortcuts) {
+  let bookmarkRequest = 0;
+  document.addEventListener('aurora-bookmarks-changed', async () => {
+    const request = ++bookmarkRequest;
+    try {
+      const response = await fetch('/home');
+      if (!response.ok) return;
+      const template = document.createElement('template');
+      template.innerHTML = await response.text();
+      const updated = template.content.querySelector('.shortcuts');
+      if (updated && bookmarkRequest === request) shortcuts.replaceChildren(...updated.childNodes);
+    } catch (error) {
+      console.warn('Не удалось обновить избранное', error);
+    }
+  });
+}
+
 const historyList = document.getElementById('history-list');
 if (historyList) {
   const time = new Intl.DateTimeFormat('ru', { hour: '2-digit', minute: '2-digit' });
@@ -89,10 +107,16 @@ if (historyList) {
   historyList.addEventListener('click', async (event) => {
     const button = event.target.closest('button[data-remove]');
     if (!button) return;
+    const row = button.closest('article');
+    const moveFocus = document.activeElement === button;
     button.disabled = true;
     if (await perform('remove-history', button.dataset.remove)) {
-      button.closest('article').remove();
+      const next = row.nextElementSibling ?? row.previousElementSibling;
+      row.remove();
       update();
+      if (moveFocus && document.activeElement === document.body) {
+        (next?.querySelector('.delete-button') ?? filter).focus();
+      }
     } else {
       button.disabled = false;
     }
@@ -103,12 +127,16 @@ if (historyList) {
     dialog.showModal();
   });
   dialog.addEventListener('close', async () => {
-    if (dialog.returnValue === 'clear' && await perform('clear-history')) {
-      historyList.replaceChildren();
-      document.getElementById('history-pagination').replaceChildren();
-      clear.disabled = true;
-      update();
+    if (dialog.returnValue !== 'clear') return;
+    clear.disabled = true;
+    if (!await perform('clear-history')) {
+      clear.disabled = false;
+      return;
     }
+    historyList.replaceChildren();
+    document.getElementById('history-pagination').replaceChildren();
+    update();
+    if (document.activeElement === document.body) filter.focus();
   });
   update();
 }

@@ -16,6 +16,7 @@ const suggestions = $('suggest-items');
 const settingsPanel = panel.querySelector('.panel');
 const backdrop = $('overlay-backdrop');
 const confirmDialog = $('confirm');
+const bookmarkEditor = $('bookmark-editor');
 
 const icons = {
   back: '<path d="M19 12H5.5m0 0 5.4-5.4M5.5 12l5.4 5.4"/>',
@@ -35,6 +36,7 @@ const icons = {
   import: '<path d="M6 6h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3m2-4h8m-3-3 3 3-3 3"/>',
   account: '<circle cx="12" cy="8" r="3.3"/><path d="M5 20v-1.2a7 7 0 0 1 14 0V20"/>',
   folder: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H9l2 2h7.5a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  edit: '<path d="m14 6 4 4M5 19l.8-4.8L15 5a2.8 2.8 0 0 1 4 4l-9.2 9.2z"/>',
   pause: '<path d="M9 5v14M15 5v14"/>',
   play: '<path d="m8 5 12 7-12 7z"/>',
   history: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
@@ -69,6 +71,7 @@ let settingsDraft;
 let settingsQueue = Promise.resolve();
 let latestSave = 0;
 let currentPanel = '';
+let panelReturnFocus;
 let editorId;
 let selectedSuggestion = -1;
 let suggestionRows = [];
@@ -76,6 +79,9 @@ let suggestionRequest = 0;
 let suggestionTimer;
 let toastTimer;
 let currentOverlay = 0;
+let sentOverlay = 0;
+let overlayPending = false;
+let viewportRevision = 0;
 let layerQueued = false;
 let layerTimer;
 let glassIntent;
@@ -85,6 +91,7 @@ let syncAgain = false;
 let fileExportUrl;
 let tabSignature = '';
 let tabsRendered = false;
+let bookmarkTheme;
 let editAddress = false;
 let appliedSettings;
 
@@ -161,8 +168,7 @@ function toText(tag, className, value) {
 
 function showState(next) {
   const tabChanged = state.activeTabId !== next.activeTabId;
-  const bookmarksChanged = state.settings?.theme !== next.settings?.theme
-    || JSON.stringify(state.bookmarks) !== JSON.stringify(next.bookmarks);
+  const bookmarksChanged = JSON.stringify(state.bookmarks) !== JSON.stringify(next.bookmarks);
   const pageChanged = tabChanged || state.currentUrl !== next.currentUrl;
   state = next;
   if (pageChanged) liquidGlass.setPage(glassPage().key);
@@ -201,8 +207,10 @@ function showState(next) {
     renderTabs();
     if (currentPanel === 'tabs') renderTabList();
   }
-  if (bookmarksChanged && currentPanel === 'bookmarks') renderBookmarks();
-  if (bookmarksChanged) renderBookmarkStrip();
+  if (bookmarksChanged || bookmarkTheme !== root.dataset.theme) {
+    if (currentPanel === 'bookmarks') renderBookmarks();
+    renderBookmarkStrip();
+  }
   if (contextTabId && !next.tabs.some(tab => tab.id === contextTabId)) dismissLayer();
   if (pageChanged && currentOverlay) setLayer();
   if (pageChanged && currentPanel === 'transfer') refreshPasswordAccounts();
@@ -280,7 +288,7 @@ function renderTabs() {
   if (!tabDrag?.moving && !finishTabSettle) revealTab(list.querySelector('.tab.active'));
   if (tabsRendered && liquidGlass.animated() && !tabDrag?.moving) {
     for (const row of incoming) {
-      row.animate([{ opacity: 0, translate: '0 4px', scale: .96 }, { opacity: 1, translate: 'none', scale: 1 }], {
+      row.animate([{ opacity: 0, translate: '0 4px' }, { opacity: 1, translate: 'none' }], {
         duration: 185, easing: 'cubic-bezier(.18,.82,.24,1)',
       });
     }
@@ -300,12 +308,10 @@ function openTabContext(row, pointerX) {
   if (!tab) return;
   closeLayer();
   contextTabId = id;
-  const anchor = pointerX ?? row.getBoundingClientRect().left + 12;
-  const menuWidth = Math.min(242, window.innerWidth - 16);
-  tabContext.style.left = Math.max(8, Math.min(anchor, window.innerWidth - menuWidth - 8)) + 'px';
   tabContext.querySelector('[data-tab-action="select"]').hidden = id === state.activeTabId;
   tabContext.querySelector('[data-tab-action="copy"]').hidden = !displayUrl(tab.url);
   tabContext.hidden = false;
+  alignPopup(tabContext, pointerX ?? row.getBoundingClientRect().left + 12);
   setLayer();
   tabContext.querySelector('button:not([hidden])').focus({ preventScroll: true });
 }
@@ -318,15 +324,18 @@ tabList.addEventListener('contextmenu', e => {
   openTabContext(row, e.clientX || undefined);
 });
 
-tabContext.addEventListener('keydown', e => {
-  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
-  e.preventDefault();
-  const items = [...tabContext.querySelectorAll('button:not([hidden])')];
-  const index = items.indexOf(document.activeElement);
-  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 :
-    (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-  items[next]?.focus({ preventScroll: true });
-});
+for (const popup of [tabContext, bookmarkMenu, menu]) {
+  popup.addEventListener('keydown', e => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const items = [...popup.querySelectorAll('button:not([hidden]):not(:disabled)')];
+    if (!items.length) return;
+    e.preventDefault();
+    const index = items.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 :
+      (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  });
+}
 tabContext.addEventListener('click', async e => {
   const button = e.target.closest('[data-tab-action]');
   const tab = state.tabs.find(item => item.id === contextTabId);
@@ -350,10 +359,13 @@ tabContext.addEventListener('click', async e => {
 
 function revealTab(tab) {
   if (!tab || tabStrip.clientWidth === 0) return;
-  const strip = tabStrip.getBoundingClientRect();
-  const box = tab.getBoundingClientRect();
-  if (box.left < strip.left) tabStrip.scrollLeft += box.left - strip.left - 2;
-  else if (box.right > strip.right) tabStrip.scrollLeft += box.right - strip.right + 2;
+  // Animated transforms must not shrink the area we scroll into view.
+  const left = tab.offsetLeft;
+  const right = left + tab.offsetWidth;
+  const visibleLeft = tabStrip.scrollLeft;
+  const visibleRight = visibleLeft + tabStrip.clientWidth;
+  if (left < visibleLeft) tabStrip.scrollLeft = left - 2;
+  else if (right > visibleRight) tabStrip.scrollLeft = right - tabStrip.clientWidth + 2;
 }
 
 tabStrip.addEventListener('wheel', (e) => {
@@ -556,9 +568,18 @@ function cycle(direction) {
 function glassPage() {
   const id = state.activeTabId;
   return {
-    key: id ? id + ':' + window.innerWidth + ':' + state.currentUrl : null,
+    key: id ? [id, window.innerWidth, window.devicePixelRatio, viewportRevision, state.currentUrl].join(':') : null,
     read: id && isWindows ? () => core.invoke('glass_frame', { id }) : null,
   };
+}
+async function syncOverlay() {
+  if (overlayPending || sentOverlay === currentOverlay) return;
+  overlayPending = true;
+  const pixels = currentOverlay;
+  const applied = await run('set_ui_overlay', { pixels });
+  if (applied) sentOverlay = pixels;
+  overlayPending = false;
+  if (currentOverlay !== pixels) syncOverlay();
 }
 function prepareGlass() {
   if (state.loading) return;
@@ -586,14 +607,14 @@ function setLayer() {
     clearTimeout(layerTimer);
     if (surface && currentOverlay === 0) {
       currentOverlay = 10000;
-      run('set_ui_overlay', { pixels: currentOverlay });
     } else if (!surface && currentOverlay) {
       // Keep the chrome at one size until the exit finishes, including rapid close/reopen clicks.
       layerTimer = setTimeout(() => {
         currentOverlay = 0;
-        run('set_ui_overlay', { pixels: 0 });
+        syncOverlay();
       }, liquidGlass.animated() ? 155 : 0);
     }
+    syncOverlay();
     const { key, read } = glassPage();
     liquidGlass.show(surface ?? null, key, read);
   });
@@ -604,28 +625,33 @@ function hideSuggestions() {
   selectedSuggestion = -1;
   suggestionRows = [];
   suggest.hidden = true;
+  address.setAttribute('aria-expanded', 'false');
   address.removeAttribute('aria-activedescendant');
   setLayer();
 }
 function closeLayer() {
   $('vault-secret').value = '';
-  bookmarkMenu.hidden = true;
+  closeBookmarkMenu();
   contextTabId = undefined;
   tabContext.hidden = true;
   menu.hidden = true;
   downloads.hidden = true;
   clearTimeout(downloadTimer);
   panel.hidden = true;
+  panelReturnFocus = undefined;
   currentPanel = '';
   hideSuggestions();
 }
 function dismissLayer() {
   const folderButton = bookmarkMenu.hidden ? null : bookmarkAnchor;
   const target = contextTabId ? tabList.querySelector('[data-id="' + contextTabId + '"] .tab-select')
-    : !downloads.hidden ? $('downloads-button') : !panel.hidden || !menu.hidden ? $('menu-button') : address;
+    : !downloads.hidden ? $('downloads-button') : !panel.hidden ? panelReturnFocus : !menu.hidden ? $('menu-button') : address;
   closeLayer();
   run('focus_chrome').then(() => {
-    if (bookmarkMenu.hidden && tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && suggest.hidden) (folderButton ?? target)?.focus({ preventScroll: true });
+    if (bookmarkMenu.hidden && tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && suggest.hidden) {
+      const previous = folderButton ?? target;
+      (previous?.getClientRects().length ? previous : $('menu-button')).focus({ preventScroll: true });
+    }
   });
 }
 
@@ -736,6 +762,7 @@ function navigate(input) {
 }
 
 address.addEventListener('focus', () => {
+  if ([menu, downloads, bookmarkMenu, tabContext].some(popup => !popup.hidden)) closeLayer();
   editAddress = true;
   address.select();
 });
@@ -745,22 +772,16 @@ address.addEventListener('blur', () => {
   hideSuggestions();
 });
 address.addEventListener('input', () => {
+  hideSuggestions();
   const value = address.value.trim();
-  if (!value) return hideSuggestions();
-  clearTimeout(suggestionTimer);
-  selectedSuggestion = -1;
-  suggestionRows = [];
-  address.removeAttribute('aria-activedescendant');
-  const request = ++suggestionRequest;
+  if (!value) return;
+  const request = suggestionRequest;
   suggestionTimer = setTimeout(async () => {
     let matches;
     try { matches = await core.invoke('suggest', { q: value }); } catch { return; }
     if (request !== suggestionRequest || document.activeElement !== address) return;
     if (!matches.length) return hideSuggestions();
     suggestionRows = matches;
-    const bounds = $('omnibox').getBoundingClientRect();
-    suggest.style.width = bounds.width + 'px';
-    suggest.style.left = bounds.left + 'px';
     suggestions.replaceChildren(...matches.map((match, index) => {
       const option = document.createElement('button');
       option.className = 'suggestion';
@@ -768,6 +789,7 @@ address.addEventListener('input', () => {
       option.tabIndex = -1;
       option.id = 'suggestion-' + index;
       option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', 'false');
       const words = document.createElement('span');
       words.append(toText('strong', '', match.title), toText('small', '', match.url));
       option.append(icon(match.kind === 'bookmark' ? 'star' : 'history'), words);
@@ -776,6 +798,10 @@ address.addEventListener('input', () => {
       return option;
     }));
     suggest.hidden = false;
+    const bounds = $('omnibox').getBoundingClientRect();
+    suggest.style.width = Math.min(innerWidth - 16, Math.max(bounds.width, 195)) + 'px';
+    alignPopup(suggest, bounds.left);
+    address.setAttribute('aria-expanded', 'true');
     setLayer();
   }, 105);
 });
@@ -829,6 +855,7 @@ function applySettings(settings) {
   root.style.setProperty('--scale', settings.ui_scale);
   $('tabs-row').hidden = settings.show_tab_row === false;
   $('tab-list').hidden = settings.show_tab_row;
+  $('toolbar-newtab').hidden = settings.show_tab_row;
   $('compact-window-slot').hidden = settings.show_tab_row;
   const slot = settings.show_tab_row ? $('tabs-row') : $('compact-window-slot');
   if ($('window-controls').parentElement !== slot) slot.append($('window-controls'));
@@ -998,8 +1025,14 @@ for (const [format, command, limit] of [['html', 'import_bookmark_html', 64], ['
 
 const viewTitles = { settings: 'Настройки', tabs: 'Вкладки', bookmarks: 'Закладки', transfer: 'Перенос данных', profiles: 'Профили и пароли', plugins: 'Плагины', about: 'О браузере' };
 function openPanel(view) {
+  const opening = panel.hidden;
+  if (opening) {
+    const active = document.activeElement;
+    panelReturnFocus = !menu.hidden ? $('menu-button') :
+      chrome.contains(active) ? active : $('menu-button');
+  }
   $('vault-secret').value = '';
-  bookmarkMenu.hidden = true;
+  closeBookmarkMenu();
   contextTabId = undefined;
   tabContext.hidden = true;
   menu.hidden = true;
@@ -1028,9 +1061,11 @@ function openPanel(view) {
     $('engine-name').textContent = isWindows ? 'WebView2 (Chromium)' : 'WebKit';
   }
   setLayer();
-  run('focus_chrome').then(() => {
-    if (currentPanel === view) $('panel-close').focus({ preventScroll: true });
-  });
+  if (opening) {
+    run('focus_chrome').then(() => {
+      if (currentPanel === view) $('panel-close').focus({ preventScroll: true });
+    });
+  }
 }
 
 function collectionItem(item, open, onClose, closeLabel, isTab = false) {
@@ -1053,15 +1088,73 @@ function renderTabList() {
   }));
 }
 function renderBookmarks() {
+  const focused = document.activeElement?.dataset.bookmarkEdit;
   const query = $('bookmark-filter').value.trim().toLocaleLowerCase('ru');
   const bookmarks = state.bookmarks.filter((b) => [b.title, b.url, ...(b.folder ?? [])].join(' ').toLocaleLowerCase('ru').includes(query));
-  const rows = bookmarks.map((b) => collectionItem(
-    b, () => navigate(b.url), () => run('remove_bookmark_by_id', { id: b.id }), 'Удалить закладку'
-  ));
+  const rows = bookmarks.map(b => {
+    const row = collectionItem(b, () => navigate(b.url),
+      () => run('remove_bookmark_by_id', { id: b.id }), 'Удалить закладку');
+    const edit = button('Изменить закладку', 'edit', 'icon-button', () => openBookmarkEditor(b));
+    edit.dataset.bookmarkEdit = b.id;
+    row.lastElementChild.before(edit);
+    return row;
+  });
   $('bookmarks').replaceChildren(...(rows.length ? rows : [toText('p', 'muted', query ? 'Ничего не найдено.' : 'Здесь появятся сохранённые сайты.')]));
+  if (focused) focusBookmarkEditorButton(focused);
 }
 $('bookmark-filter').addEventListener('input', renderBookmarks);
 
+let editingBookmark;
+function openBookmarkEditor(bookmark) {
+  editingBookmark = bookmark;
+  $('bookmark-title').value = bookmark.title;
+  $('bookmark-path').value = (bookmark.folder ?? []).join('\n');
+  $('bookmark-edit-error').hidden = true;
+  bookmarkEditor.showModal();
+}
+function focusBookmarkEditorButton(id) {
+  const edit = $('bookmarks').querySelector('[data-bookmark-edit="' + id + '"]');
+  (edit ?? $('bookmark-filter')).focus({ preventScroll: true });
+}
+$('bookmark-edit-cancel').addEventListener('click', () => bookmarkEditor.close());
+bookmarkEditor.addEventListener('cancel', e => {
+  if ($('bookmark-edit-save').disabled) e.preventDefault();
+});
+bookmarkEditor.addEventListener('close', () => {
+  if (editingBookmark && currentPanel === 'bookmarks') focusBookmarkEditorButton(editingBookmark.id);
+  editingBookmark = undefined;
+});
+bookmarkEditor.querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const save = $('bookmark-edit-save');
+  if (save.disabled || !editingBookmark) return;
+  const path = $('bookmark-path');
+  const original = editingBookmark.folder ?? [];
+  const folder = path.value === original.join('\n').replace(/\r\n?/g, '\n')
+    ? original : path.value.split('\n').map(name => name.trim()).filter(Boolean);
+  const error = $('bookmark-edit-error');
+  error.hidden = true;
+  save.disabled = $('bookmark-edit-cancel').disabled = true;
+  try {
+    await core.invoke('edit_bookmark', { id: editingBookmark.id, title: $('bookmark-title').value, folder });
+    await resync();
+    bookmarkEditor.close();
+  } catch (problem) {
+    error.textContent = String(problem?.message ?? problem);
+    error.hidden = false;
+  } finally {
+    save.disabled = $('bookmark-edit-cancel').disabled = false;
+  }
+});
+
+function alignPopup(popup, left) {
+  popup.style.left = Math.max(8, Math.min(left, innerWidth - popup.offsetWidth - 8)) + 'px';
+}
+function closeBookmarkMenu() {
+  bookmarkAnchor?.setAttribute('aria-expanded', 'false');
+  bookmarkAnchor = undefined;
+  bookmarkMenu.hidden = true;
+}
 function bookmarkButton(item, inFolder = false) {
   const label = inFolder && item.folder.length > 1 ? item.folder.slice(1).join(' / ') + ' · ' + item.title : item.title;
   const node = toText('button', 'bookmark-chip', '');
@@ -1075,6 +1168,11 @@ function bookmarkButton(item, inFolder = false) {
   return node;
 }
 function renderBookmarkStrip() {
+  bookmarkTheme = root.dataset.theme;
+  if (!bookmarkMenu.hidden) {
+    closeBookmarkMenu();
+    setLayer();
+  }
   const children = [];
   const folders = new Map();
   for (const item of state.bookmarks) {
@@ -1094,19 +1192,29 @@ function renderBookmarkStrip() {
       closeLayer();
       if (reopens) {
         bookmarkAnchor = folder;
-        bookmarkMenu.style.left = Math.max(8, Math.min(folder.getBoundingClientRect().left, innerWidth - 322)) + 'px';
+        folder.setAttribute('aria-expanded', 'true');
         $('bookmark-menu-items').replaceChildren(...items.map(entry => bookmarkButton(entry, true)));
         bookmarkMenu.hidden = false;
+        alignPopup(bookmarkMenu, folder.getBoundingClientRect().left);
         $('bookmark-menu-items').firstElementChild?.focus({ preventScroll: true });
       }
       setLayer();
     });
+    folder.setAttribute('aria-expanded', 'false');
+    folder.setAttribute('aria-controls', 'bookmark-menu');
     folder.append(toText('span', 'bookmark-label', name));
     children.push(folder);
   }
   $('bookmark-strip').replaceChildren(...children);
 }
 $('bookmark-library').addEventListener('click', () => openPanel('bookmarks'));
+$('bookmark-strip').addEventListener('scroll', () => {
+  if (!bookmarkAnchor) return;
+  const strip = $('bookmark-strip').getBoundingClientRect();
+  const anchor = bookmarkAnchor.getBoundingClientRect();
+  if (anchor.right <= strip.left || anchor.left >= strip.right) dismissLayer();
+  else alignPopup(bookmarkMenu, Math.max(strip.left, anchor.left));
+});
 $('bookmark-strip').addEventListener('wheel', e => {
   const track = e.currentTarget;
   if (track.scrollWidth > track.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
@@ -1252,12 +1360,12 @@ function dispatch(action) {
   return run('tab_action', { action });
 }
 
-$('menu-button').addEventListener('click', (event) => {
+$('menu-button').addEventListener('click', () => {
   const opening = menu.hidden;
   closeLayer();
   menu.hidden = !opening;
   setLayer();
-  if (opening && event.detail === 0) menu.querySelector('button').focus({ preventScroll: true });
+  if (opening) menu.querySelector('button').focus({ preventScroll: true });
 });
 $('newtab').addEventListener('click', () => newTab());
 $('brand').addEventListener('click', () => dispatch('home'));
@@ -1277,14 +1385,20 @@ document.addEventListener('click', (e) => {
   if (item.dataset.window) windowAction(item.dataset.window);
 });
 chrome.addEventListener('pointerdown', (e) => {
-  if (e.button === 0 && !tabContext.hidden) closeLayer();
-  if (e.button !== 0 || !e.target.closest('[data-drag], .toolbar')) return;
+  if (e.button !== 0) return;
+  if (!tabContext.hidden ||
+      (!menu.hidden && !e.target.closest('#menu-button')) ||
+      (!downloads.hidden && !e.target.closest('#downloads-button')) ||
+      (!bookmarkMenu.hidden && !e.target.closest('[aria-controls="bookmark-menu"]'))) {
+    closeLayer();
+  }
+  if (!e.target.closest('[data-drag], .toolbar')) return;
   if (e.target.closest('button, input, form, .tab, #compact-window-slot')) return;
   if (e.detail === 2) windowAction('maximize');
   else run('win_drag');
 });
 document.addEventListener('keydown', (e) => {
-  if (confirmDialog.open) return;
+  if (confirmDialog.open || bookmarkEditor.open) return;
   if (e.key === 'Escape') {
     if (!bookmarkMenu.hidden || !tabContext.hidden || !suggest.hidden || !panel.hidden || !menu.hidden || !downloads.hidden) dismissLayer();
     else if (document.activeElement === address) address.blur();
@@ -1318,20 +1432,24 @@ document.addEventListener('keydown', (e) => {
     const from = e.shiftKey ? buttons[0] : buttons.at(-1);
     if (document.activeElement === from) {
       e.preventDefault();
-      (e.shiftKey ? buttons.at(-1) : buttons[0])?.focus({ preventScroll: true });
+      (e.shiftKey ? buttons.at(-1) : buttons[0])?.focus();
     }
   }
 });
 
 window.addEventListener('focus', syncWindow);
 let chromeWidth = window.innerWidth;
+function refreshGlassViewport() {
+  liquidGlass.setPage(glassPage().key);
+  if (currentOverlay) setLayer();
+}
 window.addEventListener('resize', () => {
   if (window.innerWidth === chromeWidth) return;
   chromeWidth = window.innerWidth;
   if (!tabContext.hidden) closeLayer();
   if (suggestionRows.length) hideSuggestions();
-  liquidGlass.setPage(glassPage().key);
-  if (currentOverlay) setLayer();
+  if (bookmarkAnchor) alignPopup(bookmarkMenu, bookmarkAnchor.getBoundingClientRect().left);
+  refreshGlassViewport();
 });
 async function init() {
   if (!core || !event) return toast('Не удалось подключиться к ядру Aurora');
@@ -1340,6 +1458,10 @@ async function init() {
       event.listen('au://state', scheduleSync),
       event.listen('au://notice', (e) => toast(e.payload)),
       event.listen('au://downloads', refreshDownloads),
+      event.listen('au://viewport', () => {
+        viewportRevision++;
+        refreshGlassViewport();
+      }),
       event.listen('au://shortcut', (e) => dispatch(e.payload)),
     ]);
   } catch (error) {

@@ -205,11 +205,16 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> Settings {
 #[tauri::command]
 pub fn set_ui_overlay(app: AppHandle, pixels: u32) -> Result<(), String> {
     let pixels = pixels.min(10_000);
-    let previous = app.state::<AppState>().ui_overlay.swap(pixels, Relaxed);
+    let state = app.state::<AppState>();
+    let previous = state.ui_overlay.swap(pixels, Relaxed);
     if previous == pixels {
         return Ok(());
     }
-    layout::update_overlay(&app).map_err(|error| error.to_string())
+    if let Err(error) = layout::update_overlay(&app) {
+        state.ui_overlay.store(previous, Relaxed);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -270,7 +275,28 @@ pub fn toggle_bookmark(app: AppHandle) -> Result<bool, String> {
         }
     }
     browser::sync(&app);
+    browser::refresh_home(&app);
     Ok(bookmarked)
+}
+
+#[tauri::command]
+pub fn edit_bookmark(
+    app: AppHandle,
+    id: u64,
+    title: String,
+    folder: Vec<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut store = state.store_guard();
+        if !store.edit_bookmark(id, title, folder)? {
+            return Ok(());
+        }
+        state.save_bookmarks(&store);
+    }
+    browser::sync(&app);
+    browser::refresh_home(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -279,12 +305,14 @@ pub fn remove_bookmark_by_id(app: AppHandle, id: u64) -> bool {
     let removed = {
         let mut store = state.store_guard();
         let removed = store.remove_bookmark(id);
-        state.save_bookmarks(&store);
+        if removed {
+            state.save_bookmarks(&store);
+        }
         removed
     };
     if removed {
         browser::sync(&app);
-        browser::refresh_internal(&app);
+        browser::refresh_home(&app);
     }
     removed
 }
@@ -481,12 +509,13 @@ pub fn import_data(app: AppHandle, payload: String) -> Result<String, String> {
             "Закладок импортировано — {}",
             store.bookmarks.len()
         ));
+        drop(store);
+        browser::refresh_home(&app);
     }
     if results.is_empty() {
         return Err("В файле нет настроек или закладок Aurora".into());
     }
     browser::sync(&app);
-    browser::refresh_internal(&app);
     Ok(results.join(". "))
 }
 
@@ -515,7 +544,7 @@ pub async fn import_browser(
     .map_err(|_| "Не удалось завершить перенос")??;
     browser::sync(&app);
     if result.bookmarks != 0 {
-        browser::refresh_internal(&app);
+        browser::refresh_home(&app);
     }
     Ok(result)
 }
@@ -538,7 +567,7 @@ pub async fn import_bookmark_html(
     .map_err(|_| "Не удалось прочитать закладки")??;
     browser::sync(&app);
     if report.bookmarks != 0 {
-        browser::refresh_internal(&app);
+        browser::refresh_home(&app);
     }
     Ok(report)
 }

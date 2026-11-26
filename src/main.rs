@@ -161,6 +161,7 @@ fn run() -> tauri::Result<()> {
         commands::set_ui_overlay,
         commands::glass_frame,
         commands::toggle_bookmark,
+        commands::edit_bookmark,
         commands::remove_bookmark_by_id,
         commands::history_clear,
         commands::suggest,
@@ -257,6 +258,7 @@ fn run() -> tauri::Result<()> {
                     tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
                 ) {
                     let _ = layout::relayout(&handle);
+                    browser::emit(&handle, "au://viewport", ());
                 }
             });
 

@@ -24,6 +24,7 @@ pub struct HistoryPage {
 
 const SEARCH_ICON: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>"#;
 const ARROW_ICON: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>"#;
+const CLOSE_ICON: &str = r#"<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>"#;
 
 fn esc(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -95,7 +96,7 @@ fn home(data: &PageData<'_>) -> String {
     let cards: String = data.bookmarks.iter().filter_map(|bookmark| {
         let url = urls::bookmark_url(&bookmark.url)?;
         Some(format!(
-            r#"<a class="shortcut" href="{href}" title="{label}"><span class="site-mark"><img src="{base}/res/favorite/{id}" alt="" width="26" height="26" decoding="async"></span><span>{label}</span></a>"#,
+            r#"<a class="shortcut" href="{href}" title="{label}"><span class="site-tile"><img src="{base}/res/favorite/{id}" alt="" width="24" height="24" decoding="async"></span><span>{label}</span></a>"#,
             href = esc(&url),
             label = esc(&bookmark.title),
             base = urls::url_base(),
@@ -169,10 +170,10 @@ fn private_home(data: &PageData<'_>) -> String {
 fn history(data: &PageData<'_>) -> String {
     let rows: String = data.history.iter().map(|entry| format!(
         r#"<article class="history-row" data-time="{time}">
-           <span class="history-icon"><img src="{base}/res/history-icon/{id}" alt="" width="21" height="21" loading="lazy" decoding="async"></span>
+           <span class="site-tile"><img src="{base}/res/history-icon/{id}" alt="" width="21" height="21" loading="lazy" decoding="async"></span>
            <a href="{url}" class="row-link"><strong>{title}</strong><small>{url}</small></a>
            <time></time>
-           <button data-remove="{id}" class="delete-button" aria-label="Удалить из истории" title="Удалить из истории">×</button>
+           <button type="button" data-remove="{id}" class="delete-button" aria-label="Удалить из истории" title="Удалить из истории">{CLOSE_ICON}</button>
          </article>"#,
         url = esc(&entry.url),
         title = esc(&entry.title),
@@ -216,9 +217,9 @@ fn history(data: &PageData<'_>) -> String {
   <p id="history-message" role="status" class="muted" {hide_message}>Здесь появятся посещённые сайты.</p>
   <div id="history-list">{rows}</div>
   <nav class="history-pagination" id="history-pagination" aria-label="Страницы истории">{previous}{next}</nav>
-  <dialog id="clear-dialog">
+  <dialog id="clear-dialog" aria-labelledby="clear-title">
     <form method="dialog">
-      <h2>Очистить историю?</h2>
+      <h2 id="clear-title">Очистить историю?</h2>
       <p>Из списка будут удалены все посещения.</p>
       <div><button class="secondary" value="cancel" autofocus>Отмена</button><button class="secondary danger" value="clear">Очистить</button></div>
     </form>

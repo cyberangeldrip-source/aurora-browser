@@ -1,6 +1,6 @@
 # Быстрый запуск Aurora на Windows
 
-1. Запустите `target/release/bundle/nsis/Aurora_1.6.0_x64-setup.exe`.
+1. Запустите `target/release/bundle/nsis/Aurora_1.6.1_x64-setup.exe`.
 2. После установки найдите Aurora через меню «Пуск».
 3. Для запуска из папки проекта откройте `START-HERE.bat`.
 

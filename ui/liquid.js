@@ -80,7 +80,6 @@ const liquidGlass = (() => {
   let request;
   let motion;
   let closing;
-  let acceptUntil = 0;
   let idleTimer;
   let pendingDraw;
   const sampleAge = 3500;
@@ -283,10 +282,6 @@ const liquidGlass = (() => {
       if (request !== job) return;
       const decoded = { image, width: sample.width, height: sample.height, top: sample.top };
       cache = { key: pageKey, time: performance.now(), frame: decoded };
-      if (owner && key === pageKey && !closing && performance.now() < acceptUntil) {
-        frame = decoded;
-        queueDraw();
-      }
       if (!owner) releaseWhenIdle();
     } catch {
       // The translucent CSS surface still works if WebGL or the page sample is unavailable.
@@ -334,8 +329,6 @@ const liquidGlass = (() => {
         owner.classList.remove('glass-ready');
         frame = null;
         key = pageKey;
-        acceptUntil = 0;
-        prepare(pageKey, readFrame);
       }
       return;
     }
@@ -356,8 +349,6 @@ const liquidGlass = (() => {
       key = pageKey;
     }
     const plays = animated();
-    acceptUntil = plays ? performance.now() + 95 : 0;
-
     if (renderer === undefined) {
       try { renderer = makeRenderer(); } catch { renderer = null; }
     }
@@ -366,7 +357,9 @@ const liquidGlass = (() => {
         owner.prepend(renderer.canvas);
         resize.observe(owner);
       }
-      frame ??= fresh(pageKey);
+      // Keep the material fixed while the surface is visible. A capture can
+      // finish after the animation starts and is then used on the next open.
+      if (!reopening) frame = fresh(pageKey);
       if (!frame) prepare(pageKey, readFrame);
       else if (!owner.classList.contains('glass-ready')) paint();
     }

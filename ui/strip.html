@@ -34,10 +34,11 @@
         <button type="button" class="icon-button" id="reload" data-action="reload" data-icon="reload" title="Обновить (Ctrl+R)"></button>
         <button type="button" class="icon-button" id="home" data-action="home" data-icon="home" title="Домашняя страница"></button>
         <button type="button" class="icon-button" hidden id="tab-list" data-icon="tabs" title="Все вкладки"></button>
+        <button type="button" class="icon-button" hidden id="toolbar-newtab" data-icon="plus" data-command="newtab" title="Новая вкладка (Ctrl+T)"></button>
       </div>
       <form id="omnibox" role="search">
         <span id="site-icon" title="Адрес сайта" aria-hidden="true"></span>
-        <input id="address" aria-label="Поиск или адрес" placeholder="Поиск или адрес" type="text" autocomplete="off" spellcheck="false" aria-controls="suggest" aria-autocomplete="list">
+        <input id="address" role="combobox" aria-label="Поиск или адрес" placeholder="Поиск или адрес" type="text" autocomplete="off" spellcheck="false" aria-controls="suggest" aria-expanded="false" aria-autocomplete="list">
         <button type="button" class="icon-button star" id="bookmark" data-icon="star" title="Добавить в закладки (Ctrl+D)" aria-pressed="false"></button>
         <div class="progress" id="progress" hidden></div>
       </form>
@@ -260,11 +261,24 @@
       </div>
     </div>
   </section>
-  <dialog id="confirm">
+  <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
     <form method="dialog">
       <h2 id="confirm-title"></h2>
       <p id="confirm-text"></p>
       <div class="button-row"><button type="submit" class="pill" value="cancel" autofocus>Отмена</button><button type="submit" class="pill danger" id="confirm-action" value="accept"></button></div>
+    </form>
+  </dialog>
+  <dialog id="bookmark-editor" aria-labelledby="bookmark-editor-title">
+    <form class="bookmark-editor">
+      <h2 id="bookmark-editor-title">Изменить закладку</h2>
+      <label>Название<input type="text" class="filter-input" id="bookmark-title" maxlength="512" required autofocus></label>
+      <label>Папки <textarea id="bookmark-path" rows="3" aria-describedby="bookmark-path-help"></textarea></label>
+      <p id="bookmark-path-help" class="muted">Одна папка на строку. Для панели закладок оставьте поле пустым.</p>
+      <p id="bookmark-edit-error" role="alert" hidden></p>
+      <div class="button-row">
+        <button type="button" class="pill" id="bookmark-edit-cancel">Отмена</button>
+        <button type="submit" class="pill" id="bookmark-edit-save">Сохранить</button>
+      </div>
     </form>
   </dialog>
   <div id="toast" role="status" aria-live="polite" hidden></div>
