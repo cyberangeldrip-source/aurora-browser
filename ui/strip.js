@@ -11,12 +11,14 @@ const panel = $('panel-overlay');
 const bookmarkMenu = $('bookmark-menu');
 let bookmarkAnchor;
 const downloads = $('downloads');
+const extensions = $('extensions');
 const suggest = $('suggest');
 const suggestions = $('suggest-items');
 const settingsPanel = panel.querySelector('.panel');
 const backdrop = $('overlay-backdrop');
 const confirmDialog = $('confirm');
 const bookmarkEditor = $('bookmark-editor');
+const groupEditor = $('tab-group-editor');
 
 const icons = {
   back: '<path d="M19 12H5.5m0 0 5.4-5.4M5.5 12l5.4 5.4"/>',
@@ -36,6 +38,9 @@ const icons = {
   import: '<path d="M6 6h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3m2-4h8m-3-3 3 3-3 3"/>',
   account: '<circle cx="12" cy="8" r="3.3"/><path d="M5 20v-1.2a7 7 0 0 1 14 0V20"/>',
   folder: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H9l2 2h7.5a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  group: '<rect x="4" y="6" width="16" height="12" rx="3"/><path d="M9 10v4m6-4v4"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  grip: '<path d="M9 5h.01M15 5h.01M9 12h.01m6 0h.01M9 19h.01m6 0h.01" stroke-width="3"/>',
   edit: '<path d="m14 6 4 4M5 19l.8-4.8L15 5a2.8 2.8 0 0 1 4 4l-9.2 9.2z"/>',
   pause: '<path d="M9 5v14M15 5v14"/>',
   play: '<path d="m8 5 12 7-12 7z"/>',
@@ -135,6 +140,8 @@ function favicon(url, title, tab, bookmark) {
   } else if (tab || bookmark) {
     const img = new Image(16, 16);
     img.alt = '';
+    img.decoding = 'async';
+    if (tab && tab.id !== state.activeTabId) img.loading = 'lazy';
     const origin = isWindows ? 'http://aurora.localhost' : 'aurora://app';
     img.addEventListener('error', () => box.replaceChildren(icon('globe')), { once: true });
     img.src = tab ? origin + '/res/tab-icon/' + tab.id + '?v=' + (tab.faviconRevision ?? 0) + '&theme=' + root.dataset.theme
@@ -214,6 +221,7 @@ function showState(next) {
   if (contextTabId && !next.tabs.some(tab => tab.id === contextTabId)) dismissLayer();
   if (pageChanged && currentOverlay) setLayer();
   if (pageChanged && currentPanel === 'transfer') refreshPasswordAccounts();
+  if (pageChanged && currentPanel === 'plugins') $('plugin-use-site').hidden = !currentPluginHost();
   if (tabChanged && !downloads.hidden) {
     $('download-rows').replaceChildren();
     refreshDownloads();
@@ -243,11 +251,30 @@ async function resync() {
 
 function renderTabs() {
   const list = $('tabs');
-  tabStrip.style.setProperty('--tab-count', state.tabs.length);
   const incoming = [];
-  const known = new Map(Array.from(list.children, (node) => [Number(node.dataset.id), node]));
-  state.tabs.forEach((tab, index) => {
-    let row = known.get(tab.id);
+  const known = new Map(Array.from(list.children, (node) => [node.dataset.groupKey ?? node.dataset.id, node]));
+  const groups = new Set();
+  let index = 0;
+  let visible = 0;
+  for (const tab of state.tabs) {
+    if (tab.group) {
+      const key = (tab.private ? 'private:' : 'group:') + tab.group.id;
+      if (!groups.has(key)) {
+        const chip = known.get(key) ?? makeGroupChip(key);
+        known.delete(key);
+        groups.add(key);
+        const name = tab.group.name || 'Группа';
+        chip.lastElementChild.textContent = name;
+        chip.dataset.tabId = tab.id;
+        chip.title = (tab.group.collapsed ? 'Развернуть' : 'Свернуть') + ' · ' + name;
+        chip.setAttribute('aria-label', chip.title);
+        chip.setAttribute('aria-expanded', String(!tab.group.collapsed));
+        chip.style.setProperty('--group-hue', groupHue(tab.group.color));
+        if (list.children[index] !== chip) list.insertBefore(chip, list.children[index] ?? null);
+        index++;
+      }
+    }
+    let row = known.get(String(tab.id));
     const active = tab.id === state.activeTabId;
     if (!row) {
       row = document.createElement('div');
@@ -262,17 +289,23 @@ function renderTabs() {
       row.append(select, button('Закрыть вкладку', 'close', 'tab-close', () => closeTab(tab.id)));
       incoming.push(row);
     }
-    known.delete(tab.id);
+    known.delete(String(tab.id));
+    const hidden = Boolean(tab.group?.collapsed) && !active;
+    if (row.hidden !== hidden) row.hidden = hidden;
+    if (!row.hidden) visible++;
     row.classList.toggle('active', active);
     row.classList.toggle('private', Boolean(tab.private));
     const select = row.firstElementChild;
     const title = tab.group ? (tab.group.name || 'Группа') + ' · ' + tab.title : tab.title;
-    select.title = title;
-    select.setAttribute('aria-label', title);
+    if (select.getAttribute('aria-label') !== title) {
+      select.title = title;
+      select.setAttribute('aria-label', title);
+    }
     row.classList.toggle('grouped-tab', Boolean(tab.group));
-    if (tab.group) row.style.setProperty('--group-hue', [220,208,358,42,146,330,271,27,181][tab.group.color] ?? 220);
+    if (tab.group) row.style.setProperty('--group-hue', groupHue(tab.group.color));
     else row.style.removeProperty('--group-hue');
-    select.setAttribute('aria-selected', String(active));
+    const selected = String(active);
+    if (select.getAttribute('aria-selected') !== selected) select.setAttribute('aria-selected', selected);
     const site = internalPath(tab.url) !== null ? 'internal' : 'web';
     const glyphKey = [site, tab.faviconRevision ?? 0, root.dataset.theme, Boolean(tab.private)].join(':');
     if (row.dataset.glyph !== glyphKey) {
@@ -283,17 +316,32 @@ function renderTabs() {
       select.lastElementChild.textContent = tab.title;
     }
     if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
-  });
+    index++;
+  }
   for (const node of known.values()) node.remove();
+  tabStrip.style.setProperty('--tab-count', visible);
+  tabStrip.style.setProperty('--group-count', groups.size);
   if (!tabDrag?.moving && !finishTabSettle) revealTab(list.querySelector('.tab.active'));
   if (tabsRendered && liquidGlass.animated() && !tabDrag?.moving) {
-    for (const row of incoming) {
+    for (const row of incoming.filter(row => !row.hidden)) {
       row.animate([{ opacity: 0, translate: '0 4px' }, { opacity: 1, translate: 'none' }], {
         duration: 185, easing: 'cubic-bezier(.18,.82,.24,1)',
       });
     }
   }
   tabsRendered = true;
+}
+
+function groupHue(color) {
+  return [220,208,358,42,146,330,271,27,181][color] ?? 220;
+}
+function makeGroupChip(key) {
+  const chip = button('Группа вкладок', 'down', 'tab-group', async () => {
+    if (await run('toggle_tab_group', { id: Number(chip.dataset.tabId) })) await resync();
+  });
+  chip.dataset.groupKey = key;
+  chip.append(toText('span', '', ''));
+  return chip;
 }
 
 const tabStrip = $('tabs-scroll');
@@ -349,6 +397,11 @@ tabContext.addEventListener('click', async e => {
       toast('Не удалось скопировать адрес');
     }
     if (tab.id === contextTabId) dismissLayer();
+    return;
+  }
+  if (action === 'group') {
+    openPanel('tabs');
+    openGroupEditor(tab);
     return;
   }
   closeLayer();
@@ -454,7 +507,7 @@ function markTabDrop() {
   drag.y = drag.top + Math.max(-5, Math.min(14, (drag.yPointer - drag.originY) * .30));
   drag.ghost.style.transform = tabTranslation(drag.left, drag.y);
   const center = drag.left + width / 2 - strip.left + tabStrip.scrollLeft;
-  const rows = Array.from(tabList.children);
+  const rows = Array.from(tabList.querySelectorAll('.tab:not([hidden])'));
   const from = rows.indexOf(drag.row);
   const remaining = rows.filter(row => row !== drag.row);
   const before = remaining.find(row => center < row.offsetLeft + row.offsetWidth / 2);
@@ -599,11 +652,12 @@ function setLayer() {
   layerQueued = true;
   queueMicrotask(() => {
     layerQueued = false;
-    const surface = !panel.hidden ? settingsPanel : [bookmarkMenu, tabContext, downloads, menu, suggest].find(item => !item.hidden);
+    const surface = !panel.hidden ? settingsPanel : [bookmarkMenu, tabContext, downloads, extensions, menu, suggest].find(item => !item.hidden);
     backdrop.hidden = !surface || !panel.hidden;
     chrome.inert = !panel.hidden;
     $('menu-button').setAttribute('aria-expanded', String(!menu.hidden));
     $('downloads-button').setAttribute('aria-expanded', String(!downloads.hidden));
+    $('extensions-button').setAttribute('aria-expanded', String(!extensions.hidden));
     clearTimeout(layerTimer);
     if (surface && currentOverlay === 0) {
       currentOverlay = 10000;
@@ -636,6 +690,7 @@ function closeLayer() {
   tabContext.hidden = true;
   menu.hidden = true;
   downloads.hidden = true;
+  extensions.hidden = true;
   clearTimeout(downloadTimer);
   panel.hidden = true;
   panelReturnFocus = undefined;
@@ -645,10 +700,11 @@ function closeLayer() {
 function dismissLayer() {
   const folderButton = bookmarkMenu.hidden ? null : bookmarkAnchor;
   const target = contextTabId ? tabList.querySelector('[data-id="' + contextTabId + '"] .tab-select')
-    : !downloads.hidden ? $('downloads-button') : !panel.hidden ? panelReturnFocus : !menu.hidden ? $('menu-button') : address;
+    : !downloads.hidden ? $('downloads-button') : !extensions.hidden ? $('extensions-button')
+    : !panel.hidden ? panelReturnFocus : !menu.hidden ? $('menu-button') : address;
   closeLayer();
   run('focus_chrome').then(() => {
-    if (bookmarkMenu.hidden && tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && suggest.hidden) {
+    if (bookmarkMenu.hidden && tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && extensions.hidden && suggest.hidden) {
       const previous = folderButton ?? target;
       (previous?.getClientRects().length ? previous : $('menu-button')).focus({ preventScroll: true });
     }
@@ -748,6 +804,19 @@ function toggleDownloads() {
   });
 }
 
+function toggleExtensions() {
+  if (!extensions.hidden) return dismissLayer();
+  closeLayer();
+  extensions.hidden = false;
+  setLayer();
+  const list = $('extensions-quick-list');
+  list.replaceChildren(toText('p', 'muted', 'Загрузка…'));
+  loadBrowserExtensions(list, true);
+  run('focus_chrome').then(() => {
+    if (!extensions.hidden) $('extensions-manage').focus({ preventScroll: true });
+  });
+}
+
 async function focusAddress() {
   closeLayer();
   await run('focus_chrome');
@@ -762,7 +831,7 @@ function navigate(input) {
 }
 
 address.addEventListener('focus', () => {
-  if ([menu, downloads, bookmarkMenu, tabContext].some(popup => !popup.hidden)) closeLayer();
+  if ([menu, downloads, extensions, bookmarkMenu, tabContext].some(popup => !popup.hidden)) closeLayer();
   editAddress = true;
   address.select();
 });
@@ -1028,7 +1097,7 @@ function openPanel(view) {
   const opening = panel.hidden;
   if (opening) {
     const active = document.activeElement;
-    panelReturnFocus = !menu.hidden ? $('menu-button') :
+    panelReturnFocus = !menu.hidden ? $('menu-button') : !extensions.hidden ? $('extensions-button') :
       chrome.contains(active) ? active : $('menu-button');
   }
   $('vault-secret').value = '';
@@ -1037,6 +1106,7 @@ function openPanel(view) {
   tabContext.hidden = true;
   menu.hidden = true;
   downloads.hidden = true;
+  extensions.hidden = true;
   clearTimeout(downloadTimer);
   currentPanel = view;
   panel.hidden = false;
@@ -1063,7 +1133,7 @@ function openPanel(view) {
   setLayer();
   if (opening) {
     run('focus_chrome').then(() => {
-      if (currentPanel === view) $('panel-close').focus({ preventScroll: true });
+      if (currentPanel === view && !groupEditor.open) $('panel-close').focus({ preventScroll: true });
     });
   }
 }
@@ -1084,31 +1154,158 @@ function renderTabList() {
   $('tab-items').replaceChildren(...state.tabs.map((tab) => {
     const row = collectionItem(tab, () => selectTab(tab.id), () => closeTab(tab.id), 'Закрыть вкладку', true);
     row.classList.toggle('active', tab.id === state.activeTabId);
+    const group = button('Группа вкладок', 'group', 'icon-button', () => openGroupEditor(tab));
+    group.dataset.editGroup = tab.id;
+    row.lastElementChild.before(group);
     return row;
   }));
 }
+
+let groupingTab;
+function openGroupEditor(tab) {
+  groupingTab = tab;
+  const select = $('tab-group-select');
+  select.replaceChildren(new Option('Без группы', ''), new Option('Новая группа', 'new'));
+  const groups = new Map();
+  for (const item of state.tabs) {
+    if (item.group && item.private === tab.private) groups.set(item.group.id, item.group);
+  }
+  for (const group of groups.values()) select.add(new Option(group.name || 'Группа', 'group:' + group.id));
+  select.value = tab.group ? 'group:' + tab.group.id : 'new';
+  updateGroupEditor();
+  $('tab-group-error').hidden = true;
+  groupEditor.showModal();
+}
+function updateGroupEditor() {
+  const target = $('tab-group-select').value;
+  const editing = groupingTab?.group && target === 'group:' + groupingTab.group.id;
+  const name = $('tab-group-name');
+  $('tab-group-name-row').hidden = !(target === 'new' || editing);
+  name.required = !$('tab-group-name-row').hidden;
+  name.value = editing ? groupingTab.group.name : '';
+}
+$('tab-group-select').addEventListener('change', updateGroupEditor);
+$('tab-group-cancel').addEventListener('click', () => groupEditor.close());
+groupEditor.addEventListener('cancel', e => {
+  if ($('tab-group-save').disabled) e.preventDefault();
+});
+groupEditor.addEventListener('close', () => {
+  const previous = $('tab-items').querySelector('[data-edit-group="' + groupingTab?.id + '"]');
+  (previous ?? $('panel-close')).focus({ preventScroll: true });
+  groupingTab = undefined;
+});
+groupEditor.querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const save = $('tab-group-save');
+  if (!groupingTab || save.disabled) return;
+  const value = $('tab-group-select').value;
+  const name = $('tab-group-name').value;
+  const edit = !value ? { action: 'remove' }
+    : value === 'new' ? { action: 'create', name }
+    : value === 'group:' + groupingTab.group?.id ? { action: 'rename', name }
+    : { action: 'join', id: value.slice(6) };
+  const error = $('tab-group-error');
+  error.hidden = true;
+  save.disabled = $('tab-group-cancel').disabled = true;
+  try {
+    await core.invoke('edit_tab_group', { id: groupingTab.id, edit });
+    await resync();
+    groupEditor.close();
+  } catch (problem) {
+    error.textContent = String(problem?.message ?? problem);
+    error.hidden = false;
+  } finally {
+    save.disabled = $('tab-group-cancel').disabled = false;
+  }
+});
 function renderBookmarks() {
-  const focused = document.activeElement?.dataset.bookmarkEdit;
+  const focused = document.activeElement;
+  const editing = focused?.dataset.bookmarkEdit;
+  const gripping = focused?.closest('.bookmark-grip')?.closest('.item')?.dataset.bookmarkId;
   const query = $('bookmark-filter').value.trim().toLocaleLowerCase('ru');
   const bookmarks = state.bookmarks.filter((b) => [b.title, b.url, ...(b.folder ?? [])].join(' ').toLocaleLowerCase('ru').includes(query));
   const rows = bookmarks.map(b => {
     const row = collectionItem(b, () => navigate(b.url),
       () => run('remove_bookmark_by_id', { id: b.id }), 'Удалить закладку');
+    row.dataset.bookmarkId = b.id;
+    const grip = button('Переместить закладку', 'grip', 'icon-button bookmark-grip', () => {});
+    grip.draggable = true;
+    grip.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
+    grip.title = 'Переместить закладку (Alt+↑ / Alt+↓)';
+    row.prepend(grip);
     const edit = button('Изменить закладку', 'edit', 'icon-button', () => openBookmarkEditor(b));
     edit.dataset.bookmarkEdit = b.id;
     row.lastElementChild.before(edit);
     return row;
   });
   $('bookmarks').replaceChildren(...(rows.length ? rows : [toText('p', 'muted', query ? 'Ничего не найдено.' : 'Здесь появятся сохранённые сайты.')]));
-  if (focused) focusBookmarkEditorButton(focused);
+  if (editing) focusBookmarkEditorButton(editing);
+  if (gripping) $('bookmarks').querySelector('[data-bookmark-id="' + gripping + '"] .bookmark-grip')?.focus();
 }
 $('bookmark-filter').addEventListener('input', renderBookmarks);
+
+const bookmarkList = $('bookmarks');
+let draggingBookmark;
+let bookmarkDrop;
+function showBookmarkDrop(row, after) {
+  bookmarkDrop?.row.classList.remove('drop-after', 'drop-before');
+  bookmarkDrop = row ? { row, after } : undefined;
+  row?.classList.add(after ? 'drop-after' : 'drop-before');
+}
+async function moveBookmark(id, before) {
+  if (await run('move_bookmark', { id: Number(id), before: before ? Number(before) : null })) {
+    await resync();
+  }
+}
+bookmarkList.addEventListener('dragstart', e => {
+  const grip = e.target.closest('.bookmark-grip');
+  if (!grip) return;
+  draggingBookmark = grip.closest('.item').dataset.bookmarkId;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', '');
+});
+bookmarkList.addEventListener('dragover', e => {
+  const row = e.target.closest('[data-bookmark-id]');
+  if (!draggingBookmark || !row) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const bounds = row.getBoundingClientRect();
+  showBookmarkDrop(row, e.clientY >= bounds.top + bounds.height / 2);
+});
+bookmarkList.addEventListener('dragleave', e => {
+  if (!(e.relatedTarget instanceof Node) || !bookmarkList.contains(e.relatedTarget)) showBookmarkDrop();
+});
+bookmarkList.addEventListener('dragend', () => {
+  draggingBookmark = undefined;
+  showBookmarkDrop();
+});
+bookmarkList.addEventListener('drop', e => {
+  if (!draggingBookmark || !bookmarkDrop) return;
+  e.preventDefault();
+  const { row, after } = bookmarkDrop;
+  const target = after ? row.nextElementSibling : row;
+  moveBookmark(draggingBookmark, target?.dataset.bookmarkId);
+  draggingBookmark = undefined;
+  showBookmarkDrop();
+});
+bookmarkList.addEventListener('keydown', e => {
+  const row = e.target.closest('.bookmark-grip')?.closest('.item');
+  if (!row || !e.altKey || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
+  const destination = e.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
+  if (!destination) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const target = e.key === 'ArrowUp' ? destination : destination.nextElementSibling;
+  moveBookmark(row.dataset.bookmarkId, target?.dataset.bookmarkId);
+});
 
 let editingBookmark;
 function openBookmarkEditor(bookmark) {
   editingBookmark = bookmark;
   $('bookmark-title').value = bookmark.title;
   $('bookmark-path').value = (bookmark.folder ?? []).join('\n');
+  $('bookmark-folder-scope').hidden = !bookmark.folder?.length;
+  $('bookmark-whole-folder').checked = false;
   $('bookmark-edit-error').hidden = true;
   bookmarkEditor.showModal();
 }
@@ -1136,7 +1333,10 @@ bookmarkEditor.querySelector('form').addEventListener('submit', async e => {
   error.hidden = true;
   save.disabled = $('bookmark-edit-cancel').disabled = true;
   try {
-    await core.invoke('edit_bookmark', { id: editingBookmark.id, title: $('bookmark-title').value, folder });
+    await core.invoke('edit_bookmark', {
+      id: editingBookmark.id, title: $('bookmark-title').value, folder,
+      wholeFolder: $('bookmark-whole-folder').checked
+    });
     await resync();
     bookmarkEditor.close();
   } catch (problem) {
@@ -1242,6 +1442,7 @@ async function loadPlugins() {
       $('plugin-css').value = code[0];
       $('plugin-js').value = code[1];
       $('plugin-hosts').value = (record.hosts ?? []).join(', ');
+      $('plugin-use-site').hidden = !currentPluginHost();
       $('plugin-editor').hidden = false;
       $('plugin-editor').scrollIntoView({ block: 'nearest' });
     });
@@ -1266,6 +1467,25 @@ async function loadPlugins() {
 }
 $('plugins-refresh').addEventListener('click', loadPlugins);
 $('plugins-folder').addEventListener('click', () => run('plugins_open_folder'));
+function currentPluginHost() {
+  if (state.private || internalPath(state.currentUrl) !== null) return '';
+  try {
+    const url = new URL(state.currentUrl);
+    return ['http:', 'https:'].includes(url.protocol) && !url.hostname.includes(':')
+      ? url.hostname.replace(/\.$/, '') : '';
+  } catch {
+    return '';
+  }
+}
+$('plugin-use-site').addEventListener('click', () => {
+  const host = currentPluginHost();
+  if (!host) return;
+  const input = $('plugin-hosts');
+  const hosts = new Set(input.value.split(/[,;\s]+/u).filter(Boolean));
+  hosts.add(host);
+  input.value = [...hosts].join(', ');
+  input.focus();
+});
 $('plugin-save').addEventListener('click', async () => {
   if (await run('plugin_set_code', { id: editorId, css: $('plugin-css').value, js: $('plugin-js').value, hosts: $('plugin-hosts').value })) {
     toast('Код сохранён. Обновите нужную вкладку');
@@ -1331,7 +1551,10 @@ async function syncWindow() {
   const result = await run('window_state');
   if (!result) return;
   const maximize = document.querySelector('[data-window="maximize"]');
-  maximize.replaceChildren(icon(result.maximized ? 'restore' : 'square'));
+  const glyph = result.maximized ? 'restore' : 'square';
+  if (maximize.dataset.icon === glyph) return;
+  maximize.dataset.icon = glyph;
+  maximize.replaceChildren(icon(glyph));
   maximize.title = result.maximized ? 'Восстановить размер окна' : 'Развернуть';
 }
 function dispatch(action) {
@@ -1373,6 +1596,9 @@ $('bookmark').addEventListener('click', toggleBookmark);
 $('tab-list').addEventListener('click', () => openPanel('tabs'));
 $('panel-close').addEventListener('click', dismissLayer);
 $('downloads-close').addEventListener('click', dismissLayer);
+$('extensions-button').hidden = !isWindows;
+$('extensions-button').addEventListener('click', toggleExtensions);
+$('extensions-close').addEventListener('click', dismissLayer);
 $('downloads-folder').addEventListener('click', () => run('open_downloads_folder'));
 backdrop.addEventListener('click', dismissLayer);
 panel.addEventListener('click', (e) => { if (e.target === panel) dismissLayer(); });
@@ -1389,6 +1615,7 @@ chrome.addEventListener('pointerdown', (e) => {
   if (!tabContext.hidden ||
       (!menu.hidden && !e.target.closest('#menu-button')) ||
       (!downloads.hidden && !e.target.closest('#downloads-button')) ||
+      (!extensions.hidden && !e.target.closest('#extensions-button')) ||
       (!bookmarkMenu.hidden && !e.target.closest('[aria-controls="bookmark-menu"]'))) {
     closeLayer();
   }
@@ -1398,9 +1625,9 @@ chrome.addEventListener('pointerdown', (e) => {
   else run('win_drag');
 });
 document.addEventListener('keydown', (e) => {
-  if (confirmDialog.open || bookmarkEditor.open) return;
+  if (confirmDialog.open || bookmarkEditor.open || groupEditor.open) return;
   if (e.key === 'Escape') {
-    if (!bookmarkMenu.hidden || !tabContext.hidden || !suggest.hidden || !panel.hidden || !menu.hidden || !downloads.hidden) dismissLayer();
+    if (!bookmarkMenu.hidden || !tabContext.hidden || !suggest.hidden || !panel.hidden || !menu.hidden || !downloads.hidden || !extensions.hidden) dismissLayer();
     else if (document.activeElement === address) address.blur();
     return;
   }

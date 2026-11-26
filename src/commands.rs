@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::browser;
 use crate::core::{
-    model::{Bookmark, PluginInfo, Settings, APP_VERSION},
+    model::{Bookmark, PluginInfo, Settings, TabGroupEdit, APP_VERSION},
     store::AppState,
     urls,
 };
@@ -109,6 +109,30 @@ pub fn move_tab(app: AppHandle, id: u32, before: Option<u32>) -> bool {
     }
     browser::sync(&app);
     true
+}
+
+#[tauri::command]
+pub fn edit_tab_group(app: AppHandle, id: u32, edit: TabGroupEdit) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut store = state.store_guard();
+        store.edit_tab_group(id, edit)?;
+        state.save_tabs(&store);
+    }
+    browser::sync(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn toggle_tab_group(app: AppHandle, id: u32) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut store = state.store_guard();
+        store.toggle_tab_group(id)?;
+        state.save_tabs(&store);
+    }
+    browser::sync(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -285,11 +309,12 @@ pub fn edit_bookmark(
     id: u64,
     title: String,
     folder: Vec<String>,
+    whole_folder: Option<bool>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     {
         let mut store = state.store_guard();
-        if !store.edit_bookmark(id, title, folder)? {
+        if !store.edit_bookmark(id, title, folder, whole_folder.unwrap_or(false))? {
             return Ok(());
         }
         state.save_bookmarks(&store);
@@ -297,6 +322,21 @@ pub fn edit_bookmark(
     browser::sync(&app);
     browser::refresh_home(&app);
     Ok(())
+}
+
+#[tauri::command]
+pub fn move_bookmark(app: AppHandle, id: u64, before: Option<u64>) -> bool {
+    let state = app.state::<AppState>();
+    {
+        let mut store = state.store_guard();
+        if !store.move_bookmark(id, before) {
+            return false;
+        }
+        state.save_bookmarks(&store);
+    }
+    browser::sync(&app);
+    browser::refresh_home(&app);
+    true
 }
 
 #[tauri::command]

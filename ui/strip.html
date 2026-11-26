@@ -44,6 +44,7 @@
       </form>
       <div class="tool-group">
         <button type="button" class="icon-button" id="downloads-button" data-action="downloads" data-icon="download" title="Загрузки (Ctrl+J)" aria-expanded="false" aria-controls="downloads"></button>
+        <button type="button" class="icon-button" id="extensions-button" data-icon="plugin" title="Расширения" aria-expanded="false" aria-controls="extensions" hidden></button>
         <button type="button" class="icon-button" id="menu-button" data-icon="menu" title="Меню Aurora" aria-expanded="false" aria-controls="menu"></button>
       </div>
       <div id="compact-window-slot" hidden></div>
@@ -62,6 +63,7 @@
       <button type="button" role="menuitem" data-tab-action="select" data-icon="arrow">Перейти к вкладке</button>
       <button type="button" role="menuitem" data-tab-action="duplicate" data-icon="restore">Дублировать вкладку</button>
       <button type="button" role="menuitem" data-tab-action="copy" data-icon="link">Копировать адрес</button>
+      <button type="button" role="menuitem" data-tab-action="group" data-icon="group">Группа вкладок</button>
       <hr>
       <button type="button" role="menuitem" data-tab-action="close" data-icon="close">Закрыть вкладку</button>
     </div>
@@ -98,6 +100,15 @@
     </header>
     <div id="download-rows" class="download-rows" aria-label="Список загрузок"></div>
     <p id="downloads-empty" class="muted">Загруженные файлы появятся здесь.</p>
+  </section>
+
+  <section id="extensions" class="menu glass" aria-labelledby="extensions-title" hidden>
+    <header class="downloads-head">
+      <h2 id="extensions-title">Расширения</h2>
+      <button type="button" class="icon-button" id="extensions-manage" data-view="plugins" data-icon="settings" title="Управление расширениями"></button>
+      <button type="button" class="icon-button" id="extensions-close" data-icon="close" title="Закрыть расширения (Esc)"></button>
+    </header>
+    <div id="extensions-quick-list" class="menu-items collection" aria-label="Установленные расширения"></div>
   </section>
 
   <section id="panel-overlay" hidden>
@@ -203,6 +214,7 @@
                 <button class="pill" type="submit">Добавить</button>
               </form>
               <div class="collection" id="browser-extensions"></div>
+              <p class="muted">Разрешения по сайтам задаёт расширение. Здесь можно включить или выключить его для профиля.</p>
             </section>
             <h2>Локальные плагины</h2>
             <p class="muted">Локальные плагины могут читать и изменять открытые сайты. После изменения обновите нужную вкладку.</p>
@@ -213,7 +225,11 @@
               <label for="plugin-css">CSS</label><textarea id="plugin-css" rows="5" spellcheck="false"></textarea>
               <label for="plugin-js">JavaScript</label><textarea id="plugin-js" rows="5" spellcheck="false"></textarea>
               <label for="plugin-hosts">Разрешённые домены</label><input class="filter-input" id="plugin-hosts" placeholder="example.org, www.example.com" spellcheck="false">
-              <button type="button" class="pill" id="plugin-save">Сохранить код</button>
+              <p class="muted">Пустой список разрешает работу на всех сайтах.</p>
+              <div class="button-row">
+                <button type="button" class="pill" id="plugin-use-site" hidden>Добавить текущий сайт</button>
+                <button type="button" class="pill" id="plugin-save">Сохранить код</button>
+              </div>
             </div>
           </div>
           <div class="view" id="view-profiles" hidden>
@@ -274,10 +290,23 @@
       <label>Название<input type="text" class="filter-input" id="bookmark-title" maxlength="512" required autofocus></label>
       <label>Папки <textarea id="bookmark-path" rows="3" aria-describedby="bookmark-path-help"></textarea></label>
       <p id="bookmark-path-help" class="muted">Одна папка на строку. Для панели закладок оставьте поле пустым.</p>
+      <label class="editor-toggle" id="bookmark-folder-scope" hidden><input type="checkbox" class="switch" id="bookmark-whole-folder">Переместить папку целиком</label>
       <p id="bookmark-edit-error" role="alert" hidden></p>
       <div class="button-row">
         <button type="button" class="pill" id="bookmark-edit-cancel">Отмена</button>
         <button type="submit" class="pill" id="bookmark-edit-save">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="tab-group-editor" aria-labelledby="tab-group-title">
+    <form class="bookmark-editor">
+      <h2 id="tab-group-title">Группа вкладок</h2>
+      <label>Группа<select id="tab-group-select" class="filter-input" autofocus></select></label>
+      <label id="tab-group-name-row">Название<input type="text" class="filter-input" id="tab-group-name" maxlength="64"></label>
+      <p id="tab-group-error" role="alert" hidden></p>
+      <div class="button-row">
+        <button type="button" class="pill" id="tab-group-cancel">Отмена</button>
+        <button type="submit" class="pill" id="tab-group-save">Сохранить</button>
       </div>
     </form>
   </dialog>

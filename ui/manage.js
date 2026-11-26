@@ -80,10 +80,13 @@ submitForm($('vault-save'), async () => {
 });
 
 $('browser-extension-card').hidden = !isWindows;
-async function loadBrowserExtensions() {
+const extensionLoads = new WeakMap();
+async function loadBrowserExtensions(list = $('browser-extensions'), quick = false) {
   if (!isWindows) return;
-  const list = $('browser-extensions');
+  const request = {};
+  extensionLoads.set(list, request);
   const records = await run('browser_extensions', { action: 'list', value: '' });
+  if (extensionLoads.get(list) !== request) return;
   if (!Array.isArray(records)) {
     list.replaceChildren(toText('p', 'muted', 'Расширения недоступны в текущем окружении WebView2.'));
     return;
@@ -95,19 +98,26 @@ async function loadBrowserExtensions() {
     enabled.type = 'checkbox';
     enabled.className = 'switch';
     enabled.checked = record.enabled;
+    enabled.dataset.extensionId = record.id;
     enabled.setAttribute('aria-label', record.name);
     enabled.addEventListener('change', async () => {
+      const restoreFocus = document.activeElement === enabled;
       enabled.disabled = true;
       await run('browser_extensions', { action: 'enable', value: record.id, enabled: enabled.checked });
-      await loadBrowserExtensions();
+      await loadBrowserExtensions(list, quick);
+      if (restoreFocus && document.activeElement === document.body) {
+        list.querySelector('input[data-extension-id="' + CSS.escape(record.id) + '"]')?.focus();
+      }
     });
+    row.append(label, enabled);
+    if (quick) return row;
     const remove = button('Удалить расширение', 'close', 'icon-button', async () => {
       if (await confirmAction('Удалить расширение?', record.name, 'Удалить')) {
         await run('browser_extensions', { action: 'remove', value: record.id });
         await loadBrowserExtensions();
       }
     });
-    row.append(label, enabled, remove);
+    row.append(remove);
     return row;
   }));
   if (!records.length) list.append(toText('p', 'muted', 'Установленные расширения появятся здесь.'));

@@ -116,6 +116,7 @@ fn firefox_group(window: &Value, tab: &Value) -> Option<TabGroup> {
             .iter()
             .position(|name| group["color"].as_str() == Some(*name))
             .unwrap_or(0) as u8,
+        collapsed: group["collapsed"].as_bool().unwrap_or(false),
     })
 }
 
@@ -290,7 +291,16 @@ fn group_metadata(bytes: &[u8]) -> Option<([u8; 16], TabGroup)> {
         .collect();
     let color = int(bytes, 20 + length.next_multiple_of(4))?.clamp(0, 8) as u8;
     let id = token.iter().map(|byte| format!("{byte:02x}")).collect();
-    Some((token, TabGroup { id, name, color }))
+    let collapsed = int(bytes, 24 + length.next_multiple_of(4)) == Some(1);
+    Some((
+        token,
+        TabGroup {
+            id,
+            name,
+            color,
+            collapsed,
+        },
+    ))
 }
 
 #[cfg(test)]

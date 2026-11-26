@@ -7,7 +7,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::history_db;
-use crate::core::model::{Bookmark, HistoryEntry, Settings, Tab, TabsState};
+use crate::core::model::{
+    Bookmark, HistoryEntry, Settings, Tab, TabGroup, TabGroupEdit, TabsState,
+};
 use crate::core::plugins::PluginManager;
 use crate::core::urls;
 use crate::downloads::{Download, Downloads};
@@ -153,6 +155,39 @@ pub struct Store {
 
 fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+fn move_before<T, K: Copy + PartialEq>(
+    items: &mut Vec<T>,
+    id: K,
+    before: Option<K>,
+    key: impl Fn(&T) -> K,
+) -> bool {
+    let Some(from) = items.iter().position(|item| key(item) == id) else {
+        return false;
+    };
+    let spot = match before {
+        Some(id) => match items.iter().position(|item| key(item) == id) {
+            Some(spot) => spot,
+            None => return false,
+        },
+        None => items.len(),
+    };
+    let to = spot - usize::from(from < spot);
+    if from == to {
+        return false;
+    }
+    let moved = items.remove(from);
+    items.insert(to, moved);
+    true
+}
+
+fn group_name(input: &str) -> Result<String, String> {
+    let name = input.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err("Введите название группы до 64 символов".into());
+    }
+    Ok(name.to_owned())
 }
 
 impl Store {
@@ -400,12 +435,14 @@ impl Store {
         id: u64,
         title: String,
         folder: Vec<String>,
+        whole_folder: bool,
     ) -> Result<bool, String> {
-        let bookmark = self
+        let index = self
             .bookmarks
-            .iter_mut()
-            .find(|bookmark| bookmark.id == id)
+            .iter()
+            .position(|bookmark| bookmark.id == id)
             .ok_or("Закладка больше недоступна")?;
+        let bookmark = &self.bookmarks[index];
         let title = title.trim();
         if title.is_empty() || (title != bookmark.title && title.chars().count() > 512) {
             return Err("Введите название закладки до 512 символов".into());
@@ -423,9 +460,30 @@ impl Store {
         if bookmark.title == title && bookmark.folder == folder {
             return Ok(false);
         }
-        bookmark.title = title.to_owned();
-        bookmark.folder = folder;
+        if whole_folder && bookmark.folder != folder {
+            let from = bookmark.folder.clone();
+            if from.is_empty() || folder.is_empty() || folder.starts_with(&from) {
+                return Err("Выберите путь папки за пределами исходной папки".into());
+            }
+            if self.bookmarks.iter().any(|item| {
+                item.folder.starts_with(&from) && item.folder.len() - from.len() + folder.len() > 32
+            }) {
+                return Err("Новый путь вложенной папки превышает 32 уровня".into());
+            }
+            for item in &mut self.bookmarks {
+                if item.folder.starts_with(&from) {
+                    item.folder.splice(..from.len(), folder.iter().cloned());
+                }
+            }
+        } else {
+            self.bookmarks[index].folder = folder;
+        }
+        self.bookmarks[index].title = title.to_owned();
         Ok(true)
+    }
+
+    pub fn move_bookmark(&mut self, id: u64, before: Option<u64>) -> bool {
+        move_before(&mut self.bookmarks, id, before, |item| item.id)
     }
 
     pub fn allocate_tab(&mut self, url: String) -> Tab {
@@ -462,24 +520,80 @@ impl Store {
     }
 
     pub fn move_tab(&mut self, id: u32, before: Option<u32>) -> bool {
-        let tabs = &mut self.tabs.tabs;
-        let Some(from) = tabs.iter().position(|tab| tab.id == id) else {
-            return false;
+        move_before(&mut self.tabs.tabs, id, before, |tab| tab.id)
+    }
+
+    pub fn edit_tab_group(&mut self, id: u32, edit: TabGroupEdit) -> Result<(), String> {
+        let index = self
+            .tabs
+            .tabs
+            .iter()
+            .position(|tab| tab.id == id)
+            .ok_or("Вкладка больше недоступна")?;
+        let tab = &self.tabs.tabs[index];
+        let private = tab.private;
+        let group = match edit {
+            TabGroupEdit::Create { name } => {
+                let name = group_name(&name)?;
+                let mut bytes = [0u8; 8];
+                getrandom::fill(&mut bytes).map_err(|_| "Не удалось создать группу")?;
+                let key = u64::from_le_bytes(bytes);
+                Some(TabGroup {
+                    id: format!("aurora-{key:016x}"),
+                    name,
+                    color: (key % 9) as u8,
+                    collapsed: false,
+                })
+            }
+            TabGroupEdit::Join { id } => Some(
+                self.tabs
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.private == private)
+                    .filter_map(|tab| tab.group.as_ref())
+                    .find(|group| group.id == id)
+                    .ok_or("Группа больше недоступна")?
+                    .clone(),
+            ),
+            TabGroupEdit::Rename { name } => {
+                let mut group = tab.group.clone().ok_or("У вкладки нет группы")?;
+                group.name = group_name(&name)?;
+                self.update_tab_group(private, &group);
+                return Ok(());
+            }
+            TabGroupEdit::Remove => None,
         };
-        let spot = match before {
-            Some(id) => match tabs.iter().position(|tab| tab.id == id) {
-                Some(spot) => spot,
-                None => return false,
-            },
-            None => tabs.len(),
-        };
-        let to = spot - usize::from(from < spot);
-        if from == to {
-            return false;
+        self.tabs.tabs[index].group = group;
+        Ok(())
+    }
+
+    pub fn toggle_tab_group(&mut self, id: u32) -> Result<(), String> {
+        let tab = self
+            .tabs
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .ok_or("Вкладка больше недоступна")?;
+        let private = tab.private;
+        let mut group = tab.group.clone().ok_or("У вкладки нет группы")?;
+        group.collapsed = !group.collapsed;
+        self.update_tab_group(private, &group);
+        Ok(())
+    }
+
+    fn update_tab_group(&mut self, private: bool, group: &TabGroup) {
+        for tab in &mut self.tabs.tabs {
+            if tab.private == private && tab.group.as_ref().is_some_and(|item| item.id == group.id)
+            {
+                tab.group = Some(group.clone());
+            }
         }
-        let moved = tabs.remove(from);
-        tabs.insert(to, moved);
-        true
+        for tab in &mut self.recently_closed {
+            if tab.private == private && tab.group.as_ref().is_some_and(|item| item.id == group.id)
+            {
+                tab.group = Some(group.clone());
+            }
+        }
     }
 
     pub fn last_closed(&self) -> Option<&Tab> {
@@ -676,16 +790,84 @@ mod tests {
         let id = store.bookmarks[0].id;
         let folder = vec!["Работа".to_owned(), "Проект / Код".to_owned()];
         assert!(store
-            .edit_bookmark(id, "  New name  ".to_owned(), folder.clone())
+            .edit_bookmark(id, "  New name  ".to_owned(), folder.clone(), false)
             .unwrap());
         assert!(store
-            .edit_bookmark(id, "Bad edit".to_owned(), vec!["".to_owned()])
+            .edit_bookmark(id, "Bad edit".to_owned(), vec!["".to_owned()], false)
             .is_err());
         let bookmark = &store.bookmarks[0];
         assert_eq!(bookmark.id, id);
         assert_eq!(bookmark.url, "https://example.org/");
         assert_eq!(bookmark.title, "New name");
         assert_eq!(bookmark.folder, folder);
+    }
+
+    #[test]
+    fn moving_a_bookmark_folder_retains_children_and_rejects_cycles() {
+        let mut store = Store::load(
+            &std::env::temp_dir().join("aurora-bookmark-folder-test-empty-profile"),
+            Vec::new(),
+        );
+        store.replace_bookmarks(Vec::new());
+        store.add_bookmark_in("https://example.org/".into(), "A", vec!["Work".into()]);
+        store.add_bookmark_in(
+            "https://example.com/".into(),
+            "B",
+            vec!["Work".into(), "Research".into()],
+        );
+        let (a, b) = (store.bookmarks[0].id, store.bookmarks[1].id);
+        assert!(store
+            .edit_bookmark(a, "A".into(), vec!["Work".into(), "Nested".into()], true)
+            .is_err());
+        assert!(store
+            .edit_bookmark(a, "A".into(), vec!["Archive".into(), "Work".into()], true)
+            .unwrap());
+        assert!(store.move_bookmark(b, Some(a)));
+        assert_eq!(store.bookmarks[0].folder, ["Archive", "Work", "Research"]);
+        assert_eq!(store.bookmarks[1].folder, ["Archive", "Work"]);
+    }
+
+    #[test]
+    fn groups_keep_members_in_sync_and_respect_private_tabs() {
+        let mut store = Store::load(
+            &std::env::temp_dir().join("aurora-tab-group-test-empty-profile"),
+            Vec::new(),
+        );
+        let first = store.tabs.tabs[0].id;
+        let second = store.allocate_tab("https://example.org/".into());
+        let mut third = store.allocate_tab("https://example.com/".into());
+        third.private = true;
+        let (second_id, third_id) = (second.id, third.id);
+        store.tabs.tabs.extend([second, third]);
+        store
+            .edit_tab_group(
+                first,
+                TabGroupEdit::Create {
+                    name: "Work".into(),
+                },
+            )
+            .unwrap();
+        let id = store.tabs.tabs[0].group.as_ref().unwrap().id.clone();
+        assert!(store
+            .edit_tab_group(third_id, TabGroupEdit::Join { id: id.clone() })
+            .is_err());
+        store
+            .edit_tab_group(second_id, TabGroupEdit::Join { id })
+            .unwrap();
+        store
+            .edit_tab_group(
+                second_id,
+                TabGroupEdit::Rename {
+                    name: "Research".into(),
+                },
+            )
+            .unwrap();
+        store.toggle_tab_group(first).unwrap();
+        let group = store.tabs.tabs[0].group.as_ref().unwrap();
+        assert_eq!(group.name, "Research");
+        assert!(group.collapsed);
+        assert_eq!(Some(group), store.tabs.tabs[1].group.as_ref());
+        assert!(store.tabs.tabs[2].group.is_none());
     }
 
     #[test]

@@ -147,6 +147,17 @@ pub struct TabGroup {
     pub id: String,
     pub name: String,
     pub color: u8,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum TabGroupEdit {
+    Create { name: String },
+    Rename { name: String },
+    Join { id: String },
+    Remove,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
