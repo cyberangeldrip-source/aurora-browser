@@ -328,4 +328,33 @@ mod tests {
             [("https://example.org/".into(), String::new(), None)]
         );
     }
+
+    #[test]
+    fn chromium_restores_tab_group_metadata() {
+        let mut bytes = b"SNSS\x03\0\0\0".to_vec();
+        let token = [0x12; 16];
+        append(&mut bytes, 6, &navigation(1, 0, "https://example.org/"));
+
+        let mut membership = [0; 32];
+        membership[..4].copy_from_slice(&1_i32.to_le_bytes());
+        membership[8..24].copy_from_slice(&token);
+        membership[24] = 1;
+        append(&mut bytes, 25, &membership);
+
+        let mut metadata = 32_i32.to_le_bytes().to_vec();
+        metadata.extend(token);
+        metadata.extend(3_i32.to_le_bytes());
+        for value in "Код".encode_utf16() {
+            metadata.extend(value.to_le_bytes());
+        }
+        metadata.extend([0, 0]);
+        metadata.extend(4_i32.to_le_bytes());
+        append(&mut bytes, 27, &metadata);
+
+        let tabs = super::chromium(&bytes).unwrap();
+        let group = tabs[0].2.as_ref().unwrap();
+        assert_eq!(group.name, "Код");
+        assert_eq!(group.color, 4);
+        assert_eq!(group.id, "12".repeat(16));
+    }
 }

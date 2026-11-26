@@ -631,4 +631,21 @@ mod tests {
             [("https://example.org/".into(), "A & B".into(), Vec::new())]
         );
     }
+
+    #[test]
+    fn exported_html_restores_nested_folders_and_root_links() {
+        let links = super::html_bookmarks(
+            r#"<DL><p>
+                <DT><H3>Work &amp; study</H3>
+                <DL><p>
+                    <DT><H3>Rust</H3>
+                    <DL><p><DT><A HREF="https://www.rust-lang.org/">Rust</A></DL><p>
+                </DL><p>
+                <DT><A HREF="https://example.org/">Home</A>
+            </DL><p>"#,
+        )
+        .unwrap();
+        assert_eq!(links[0].2, ["Work & study", "Rust"]);
+        assert!(links[1].2.is_empty());
+    }
 }

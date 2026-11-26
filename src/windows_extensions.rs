@@ -14,6 +14,14 @@ pub struct Extension {
     enabled: bool,
 }
 
+fn is_runtime_extension(id: &str) -> bool {
+    matches!(
+        id,
+        // The WebView2 profile list also contains the bundled clipboard and PDF components.
+        "dgiklkfkllikcanfonkcabmbdfmgleag" | "mhjfbmdgcfjbbpaeojofohoefgiehjai"
+    )
+}
+
 unsafe fn describe(item: &ICoreWebView2BrowserExtension) -> windows::core::Result<Extension> {
     let mut value = PWSTR::null();
     item.Id(&mut value)?;
@@ -90,6 +98,9 @@ pub async fn request(view: Webview, request: Request) -> Result<Vec<Extension>, 
                         for index in 0..count {
                             let item = list.GetValueAtIndex(index)?;
                             let information = describe(&item)?;
+                            if is_runtime_extension(&information.id) {
+                                continue;
+                            }
                             match &request {
                                 Request::Enable(id, enabled) if *id == information.id => {
                                     let done = send.clone();
