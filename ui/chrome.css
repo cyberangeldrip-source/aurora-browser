@@ -16,7 +16,8 @@
   --scale: 1;
   --tabs-h: 44px;
   --tools-h: 52px;
-  --strip-h: calc(var(--tools-h) + var(--tabs-h));
+  --bookmarks-h: 36px;
+  --strip-h: calc(var(--tools-h) + var(--tabs-h) + var(--bookmarks-h));
   --ease: cubic-bezier(.2, .75, .25, 1);
   --glass-ease: cubic-bezier(.18,.82,.24,1);
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -36,6 +37,7 @@
 }
 :root.compact { --tools-h: 42px; }
 :root.no-tabs { --tabs-h: 0px; }
+:root.no-bookmark-bar { --bookmarks-h: 0px; }
 *, *::before, *::after { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; margin: 0; }
 body { color: var(--ink); font-size: calc(14px * var(--scale)); user-select: none; }
@@ -66,6 +68,26 @@ h1, h2, p { margin: 0; }
 .tabs-row, .toolbar { display: flex; align-items: center; min-width: 0; }
 .tabs-row { height: var(--tabs-h); gap: 6px; padding: 0 8px 0 12px; }
 .toolbar { height: var(--tools-h); gap: 10px; padding: 0 12px; }
+.bookmark-bar {
+  display: flex; align-items: center; gap: 7px; height: var(--bookmarks-h);
+  padding: 0 12px 4px;
+  background: linear-gradient(105deg, rgb(203 237 255 / .07), transparent 35%, rgb(169 129 249 / .078));
+  box-shadow: inset 0 -1px rgb(190 209 252 / .14);
+}
+.bookmark-library.icon-button { width: 29px; height: 27px; border: 1px solid var(--edge-faint); border-radius: 9px; }
+.bookmark-library svg { width: 15px; height: 15px; }
+.bookmark-strip { display: flex; align-items: center; gap: 3px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.bookmark-chip {
+  display: flex; align-items: center; gap: 7px; flex: none; max-width: 148px; height: 27px;
+  padding: 0 8px; border-radius: 9px; color: var(--ink); font-size: .83em;
+  transition: background-color 140ms var(--glass-ease);
+}
+.bookmark-chip:hover, .bookmark-chip:focus-visible { background: var(--hover); }
+.bookmark-chip:focus-visible { outline-offset: -2px; }
+.bookmark-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.bookmark-chip svg { width: 15px; height: 15px; }
+#bookmark-menu { width: min(312px, calc(100vw - 16px)); right: auto; transform-origin: top left; }
+#bookmark-menu .bookmark-chip { max-width: none; min-height: 34px; }
 .brand { display: flex; gap: 7px; align-items: center; padding: 3px 10px 3px 3px; border-radius: 11px; font-size: 14px; font-weight: 590; letter-spacing: -.04em; }
 .brand:hover { background: var(--fill); }
 .brand img, .panel-brand img { filter: drop-shadow(0 1px 3px rgb(113 199 245 / .29)); }
@@ -89,6 +111,8 @@ h1, h2, p { margin: 0; }
 .tab-select { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 8px; height: 100%; text-align: left; touch-action: pan-y; }
 .tab-title, .item-title, .item-subtitle { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tab-title { font-size: .87em; }
+.grouped-tab { border-bottom-color: hsl(var(--group-hue) 73% 66% / .95); }
+.grouped-tab.active { border-bottom-color: hsl(var(--group-hue) 80% 72%); }
 .tab.private .tab-select svg, #site-icon[data-icon="private"] { color: #a478ed; }
 .favicon {
   width: 18px; height: 18px; display: grid; place-items: center; flex: none;
@@ -370,8 +394,58 @@ dialog .button-row { justify-content: end; }
 .transfer-card > .pill { justify-self: start; }
 .transfer-source { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .transfer-source select { min-width: min(190px, 100%); flex: 1; }
+.panel select {
+  color: var(--ink); min-height: 33px; padding: 5px 9px;
+  border: 1px solid var(--edge); border-radius: 10px;
+  background: linear-gradient(150deg, var(--hover), rgb(var(--panel-base) / .50));
+  box-shadow: inset 0 1px rgb(228 243 255 / .13);
+}
+@supports (appearance: base-select) {
+  .panel select, .panel select::picker(select) { appearance: base-select; }
+  .panel select::picker(select) {
+    margin-block: 5px; padding: 5px; color: var(--ink); border: 1px solid var(--edge); border-radius: 15px;
+    background: radial-gradient(ellipse at 10% 0%, rgb(178 227 255 / .21), transparent 64%),
+      linear-gradient(135deg, rgb(var(--panel-base) / .89), rgb(var(--tray) / .84));
+    backdrop-filter: blur(16px) saturate(145%);
+    box-shadow: inset 0 1px var(--light-rim), inset 0 -1px var(--warm-rim), 0 9px 27px #08091865;
+  }
+  .panel select option { padding: 7px 9px; border-radius: 8px; }
+  .panel select option:hover, .panel select option:focus, .panel select option:checked { background: var(--hover); }
+  .panel select::picker-icon { color: var(--muted); }
+}
 .transfer-options { display: flex; flex-wrap: wrap; gap: 6px 13px; }
 .transfer-options input { accent-color: var(--accent); }
+.manage-form { display: flex; gap: 7px; flex-wrap: wrap; }
+.manage-form input { flex: 1; min-width: min(160px, 100%); }
+.manage-form .pill { flex: none; }
+.settings-card {
+  background: linear-gradient(154deg, var(--fill), transparent 48%, rgb(153 117 233 / .065));
+  box-shadow: inset 0 1px rgb(224 245 255 / .09), 0 5px 14px rgb(9 13 34 / .11);
+}
+.panel input[type="range"] {
+  appearance: none; height: 6px; border-radius: 99px; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent), rgb(177 224 255 / .34)); border: 1px solid var(--edge);
+}
+.panel input[type="range"]::-webkit-slider-thumb {
+  appearance: none; width: 16px; height: 16px; border: 1px solid var(--light-rim); border-radius: 50%;
+  background: radial-gradient(circle at 30% 26%, #eafaff, var(--accent) 95%);
+  box-shadow: 0 3px 7px #090c2777, inset 0 1px #ffffff92;
+}
+.transfer-options label { display: inline-flex; align-items: center; gap: 4px; }
+.transfer-options input[type="checkbox"] {
+  appearance: none; display: grid; place-items: center; width: 15px; height: 15px; margin: 0;
+  border-radius: 5px; border: 1px solid var(--edge); cursor: pointer;
+  background: linear-gradient(150deg, var(--hover), var(--fill));
+}
+.transfer-options input[type="checkbox"]:checked {
+  border-color: var(--light-rim);
+  background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 62%, #9cd5f0));
+}
+.transfer-options input[type="checkbox"]:checked::after {
+  content: ""; width: 7px; height: 4px; border-bottom: 1.5px solid white; border-left: 1.5px solid white;
+  transform: translateY(-1px) rotate(-45deg);
+}
+.transfer-options input:disabled { opacity: .42; cursor: default; }
 .transfer-status { white-space: pre-line; }
 .transfer-card.settings-card {
   border-radius: 18px;

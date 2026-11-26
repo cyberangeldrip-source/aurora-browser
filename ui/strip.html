@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aurora</title>
   <link rel="stylesheet" href="chrome.css">
+  <link rel="stylesheet" href="tooltip.css">
   <script src="liquid.js" defer></script>
   <script src="strip.js" defer></script>
+  <script src="manage.js" defer></script>
+  <script src="tooltip.js" defer></script>
 </head>
 <body>
   <header id="chrome" aria-label="Панель браузера">
@@ -44,10 +47,15 @@
       </div>
       <div id="compact-window-slot" hidden></div>
     </div>
+    <div class="bookmark-bar" id="bookmark-bar" aria-label="Панель закладок" data-drag>
+      <button type="button" class="bookmark-library icon-button" id="bookmark-library" data-icon="star" title="Все закладки" aria-label="Все закладки"></button>
+      <div id="bookmark-strip" class="bookmark-strip"></div>
+    </div>
   </header>
 
   <div id="overlay-backdrop" hidden></div>
   <div id="suggest" class="glass" role="listbox" aria-label="Подсказки" hidden><div id="suggest-items"></div></div>
+  <section id="bookmark-menu" class="menu glass" aria-label="Папка закладок" hidden><div class="menu-items" id="bookmark-menu-items"></div></section>
   <div id="tab-context" class="menu glass" role="menu" aria-label="Действия с вкладкой" hidden>
     <div class="menu-items">
       <button type="button" role="menuitem" data-tab-action="select" data-icon="arrow">Перейти к вкладке</button>
@@ -77,6 +85,7 @@
       <button type="button" data-command="fullscreen" data-icon="fullscreen">Во весь экран <kbd>F11</kbd></button>
       <button type="button" data-command="settings" data-icon="settings">Настройки <kbd>Ctrl+,</kbd></button>
       <button type="button" data-command="transfer" data-icon="import">Перенос данных</button>
+      <button type="button" data-command="profiles" data-icon="account">Профили и пароли</button>
     </div>
   </div>
 
@@ -99,6 +108,7 @@
           <button type="button" data-view="tabs" data-icon="tabs">Вкладки</button>
           <button type="button" data-view="bookmarks" data-icon="star">Закладки</button>
           <button type="button" data-view="transfer" data-icon="import">Перенос данных</button>
+          <button type="button" data-view="profiles" data-icon="account">Профили и пароли</button>
           <button type="button" data-view="plugins" data-icon="plugin">Плагины</button>
           <button type="button" data-view="about" data-icon="info">О браузере</button>
         </nav>
@@ -118,6 +128,7 @@
               <label class="setting-row" for="ui-scale"><span>Масштаб интерфейса</span><input type="range" id="ui-scale" data-setting="ui_scale" min=".85" max="1.15" step=".05"></label>
               <label class="setting-row" for="compact"><span>Компактная панель</span><input type="checkbox" class="switch" id="compact" data-setting="compact"></label>
               <label class="setting-row" for="show-tabs"><span>Показывать ряд вкладок</span><input type="checkbox" class="switch" id="show-tabs" data-setting="show_tab_row"></label>
+              <label class="setting-row" for="show-bookmark-bar"><span>Панель закладок</span><input type="checkbox" class="switch" id="show-bookmark-bar" data-setting="show_bookmark_bar"></label>
             </div>
             <h2>Поиск и сеанс</h2>
             <div class="settings-card">
@@ -184,6 +195,15 @@
             </section>
           </div>
           <div class="view" id="view-plugins" hidden>
+            <section class="settings-card transfer-card" id="browser-extension-card">
+              <h2>Расширения браузера</h2>
+              <form class="manage-form" id="extension-install">
+                <input class="filter-input" id="extension-path" aria-label="Папка распакованного расширения" placeholder="Путь к папке с manifest.json" required>
+                <button class="pill" type="submit">Добавить</button>
+              </form>
+              <div class="collection" id="browser-extensions"></div>
+            </section>
+            <h2>Локальные плагины</h2>
             <p class="muted">Локальные плагины могут читать и изменять открытые сайты. После изменения обновите нужную вкладку.</p>
             <div class="collection" id="plugins"></div>
             <div class="button-row"><button type="button" class="pill" id="plugins-folder">Открыть папку плагинов</button><button type="button" class="pill" id="plugins-refresh">Обновить список</button></div>
@@ -191,8 +211,30 @@
               <h2 id="plugin-name"></h2>
               <label for="plugin-css">CSS</label><textarea id="plugin-css" rows="5" spellcheck="false"></textarea>
               <label for="plugin-js">JavaScript</label><textarea id="plugin-js" rows="5" spellcheck="false"></textarea>
+              <label for="plugin-hosts">Разрешённые домены</label><input class="filter-input" id="plugin-hosts" placeholder="example.org, www.example.com" spellcheck="false">
               <button type="button" class="pill" id="plugin-save">Сохранить код</button>
             </div>
+          </div>
+          <div class="view" id="view-profiles" hidden>
+            <section class="settings-card transfer-card">
+              <h2>Локальные профили</h2>
+              <form class="manage-form" id="profile-create">
+                <input class="filter-input" id="profile-name" aria-label="Имя нового профиля" placeholder="Имя нового профиля" maxlength="45" required>
+                <button class="pill" type="submit">Создать</button>
+              </form>
+              <div class="collection" id="profile-list"></div>
+            </section>
+            <section class="settings-card transfer-card" id="vault-panel">
+              <h2>Сохранённые входы</h2>
+              <form class="manage-form" id="vault-save" autocomplete="off">
+                <input class="filter-input" id="vault-site" type="url" aria-label="HTTPS-адрес сайта" placeholder="https://example.org" required>
+                <input class="filter-input" id="vault-user" aria-label="Имя аккаунта" placeholder="Имя аккаунта">
+                <input class="filter-input" id="vault-secret" aria-label="Пароль" type="password" placeholder="Пароль" autocomplete="new-password" required>
+                <button class="pill" type="submit">Сохранить</button>
+              </form>
+              <input class="filter-input" id="vault-filter" type="search" aria-label="Найти сохранённый вход" placeholder="Найти вход по сайту или имени">
+              <div class="collection" id="vault-list"></div>
+            </section>
           </div>
           <div class="view" id="view-about" hidden>
             <dl class="settings-card details">

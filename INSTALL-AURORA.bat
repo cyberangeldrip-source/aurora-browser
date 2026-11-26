@@ -3,8 +3,8 @@ setlocal
 cd /d "%~dp0"
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 
-if exist "target\release\bundle\nsis\Aurora_1.5.0_x64-setup.exe" (
-  start "" "%~dp0target\release\bundle\nsis\Aurora_1.5.0_x64-setup.exe"
+if exist "target\release\bundle\nsis\Aurora_1.6.0_x64-setup.exe" (
+  start "" "%~dp0target\release\bundle\nsis\Aurora_1.6.0_x64-setup.exe"
   exit /b
 )
 

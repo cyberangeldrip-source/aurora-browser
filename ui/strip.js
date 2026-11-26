@@ -8,6 +8,8 @@ const chrome = $('chrome');
 const menu = $('menu');
 const tabContext = $('tab-context');
 const panel = $('panel-overlay');
+const bookmarkMenu = $('bookmark-menu');
+let bookmarkAnchor;
 const downloads = $('downloads');
 const suggest = $('suggest');
 const suggestions = $('suggest-items');
@@ -31,6 +33,7 @@ const icons = {
   star: '<path d="m12 3 2.8 5.6 6.2.9-4.5 4.4 1 6.1-5.5-2.9-5.5 2.9 1-6.1L3 9.5l6.2-.9z"/>',
   download: '<path d="M12 4v10m-3.8-3.8L12 14l3.8-3.8M4.5 15.5V18A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5v-2.5"/>',
   import: '<path d="M6 6h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3m2-4h8m-3-3 3 3-3 3"/>',
+  account: '<circle cx="12" cy="8" r="3.3"/><path d="M5 20v-1.2a7 7 0 0 1 14 0V20"/>',
   folder: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H9l2 2h7.5a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
   pause: '<path d="M9 5v14M15 5v14"/>',
   play: '<path d="m8 5 12 7-12 7z"/>',
@@ -113,7 +116,7 @@ function displayUrl(raw) {
   const path = internalPath(raw);
   return path === null ? raw : !path || path === 'home' || path === 'private' ? '' : 'aurora://' + path;
 }
-function favicon(url, title, tab) {
+function favicon(url, title, tab, bookmark) {
   const box = document.createElement('span');
   box.className = 'favicon';
   box.setAttribute('aria-hidden', 'true');
@@ -122,12 +125,13 @@ function favicon(url, title, tab) {
     img.alt = '';
     img.src = 'aurora-mark.svg';
     box.append(img);
-  } else if (tab) {
+  } else if (tab || bookmark) {
     const img = new Image(16, 16);
     img.alt = '';
     const origin = isWindows ? 'http://aurora.localhost' : 'aurora://app';
     img.addEventListener('error', () => box.replaceChildren(icon('globe')), { once: true });
-    img.src = origin + '/res/tab-icon/' + tab.id + '?v=' + (tab.faviconRevision ?? 0) + '&theme=' + root.dataset.theme;
+    img.src = tab ? origin + '/res/tab-icon/' + tab.id + '?v=' + (tab.faviconRevision ?? 0) + '&theme=' + root.dataset.theme
+      : origin + '/res/favorite/' + bookmark.id + '?theme=' + root.dataset.theme;
     box.append(img);
   } else {
     const key = (() => { try { return new URL(url).host; } catch { return url; } })();
@@ -157,8 +161,8 @@ function toText(tag, className, value) {
 
 function showState(next) {
   const tabChanged = state.activeTabId !== next.activeTabId;
-  const bookmarksChanged = currentPanel === 'bookmarks'
-    && JSON.stringify(state.bookmarks) !== JSON.stringify(next.bookmarks);
+  const bookmarksChanged = state.settings?.theme !== next.settings?.theme
+    || JSON.stringify(state.bookmarks) !== JSON.stringify(next.bookmarks);
   const pageChanged = tabChanged || state.currentUrl !== next.currentUrl;
   state = next;
   if (pageChanged) liquidGlass.setPage(glassPage().key);
@@ -198,6 +202,7 @@ function showState(next) {
     if (currentPanel === 'tabs') renderTabList();
   }
   if (bookmarksChanged && currentPanel === 'bookmarks') renderBookmarks();
+  if (bookmarksChanged) renderBookmarkStrip();
   if (contextTabId && !next.tabs.some(tab => tab.id === contextTabId)) dismissLayer();
   if (pageChanged && currentOverlay) setLayer();
   if (pageChanged && currentPanel === 'transfer') refreshPasswordAccounts();
@@ -253,8 +258,12 @@ function renderTabs() {
     row.classList.toggle('active', active);
     row.classList.toggle('private', Boolean(tab.private));
     const select = row.firstElementChild;
-    select.title = tab.title;
-    select.setAttribute('aria-label', tab.title);
+    const title = tab.group ? (tab.group.name || 'Группа') + ' · ' + tab.title : tab.title;
+    select.title = title;
+    select.setAttribute('aria-label', title);
+    row.classList.toggle('grouped-tab', Boolean(tab.group));
+    if (tab.group) row.style.setProperty('--group-hue', [220,208,358,42,146,330,271,27,181][tab.group.color] ?? 220);
+    else row.style.removeProperty('--group-hue');
     select.setAttribute('aria-selected', String(active));
     const site = internalPath(tab.url) !== null ? 'internal' : 'web';
     const glyphKey = [site, tab.faviconRevision ?? 0, root.dataset.theme, Boolean(tab.private)].join(':');
@@ -569,7 +578,7 @@ function setLayer() {
   layerQueued = true;
   queueMicrotask(() => {
     layerQueued = false;
-    const surface = !panel.hidden ? settingsPanel : [tabContext, downloads, menu, suggest].find(item => !item.hidden);
+    const surface = !panel.hidden ? settingsPanel : [bookmarkMenu, tabContext, downloads, menu, suggest].find(item => !item.hidden);
     backdrop.hidden = !surface || !panel.hidden;
     chrome.inert = !panel.hidden;
     $('menu-button').setAttribute('aria-expanded', String(!menu.hidden));
@@ -599,6 +608,8 @@ function hideSuggestions() {
   setLayer();
 }
 function closeLayer() {
+  $('vault-secret').value = '';
+  bookmarkMenu.hidden = true;
   contextTabId = undefined;
   tabContext.hidden = true;
   menu.hidden = true;
@@ -609,11 +620,12 @@ function closeLayer() {
   hideSuggestions();
 }
 function dismissLayer() {
+  const folderButton = bookmarkMenu.hidden ? null : bookmarkAnchor;
   const target = contextTabId ? tabList.querySelector('[data-id="' + contextTabId + '"] .tab-select')
     : !downloads.hidden ? $('downloads-button') : !panel.hidden || !menu.hidden ? $('menu-button') : address;
   closeLayer();
   run('focus_chrome').then(() => {
-    if (tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && suggest.hidden) target?.focus({ preventScroll: true });
+    if (bookmarkMenu.hidden && tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && suggest.hidden) (folderButton ?? target)?.focus({ preventScroll: true });
   });
 }
 
@@ -808,6 +820,8 @@ function applySettings(settings) {
   root.dataset.theme = settings.theme;
   root.classList.toggle('compact', settings.compact);
   root.classList.toggle('no-tabs', !settings.show_tab_row);
+  root.classList.toggle('no-bookmark-bar', !settings.show_bookmark_bar);
+  $('bookmark-bar').hidden = !settings.show_bookmark_bar;
   root.classList.toggle('no-motion', !settings.animations);
   root.style.setProperty('--accent', settings.accent);
   root.style.setProperty('--alpha', settings.glass_opacity);
@@ -843,7 +857,7 @@ function changeSetting(name, value, persist) {
   settingsQueue = settingsQueue.then(async () => {
     const saved = await run('save_settings', { settings: snapshot });
     if (saved) {
-      const moved = saved.compact !== state.settings.compact || saved.show_tab_row !== state.settings.show_tab_row;
+      const moved = saved.compact !== state.settings.compact || saved.show_tab_row !== state.settings.show_tab_row || saved.show_bookmark_bar !== state.settings.show_bookmark_bar;
       state.settings = saved;
       if (moved) liquidGlass.repaint();
     }
@@ -982,8 +996,10 @@ for (const [format, command, limit] of [['html', 'import_bookmark_html', 64], ['
   });
 }
 
-const viewTitles = { settings: 'Настройки', tabs: 'Вкладки', bookmarks: 'Закладки', transfer: 'Перенос данных', plugins: 'Плагины', about: 'О браузере' };
+const viewTitles = { settings: 'Настройки', tabs: 'Вкладки', bookmarks: 'Закладки', transfer: 'Перенос данных', profiles: 'Профили и пароли', plugins: 'Плагины', about: 'О браузере' };
 function openPanel(view) {
+  $('vault-secret').value = '';
+  bookmarkMenu.hidden = true;
   contextTabId = undefined;
   tabContext.hidden = true;
   menu.hidden = true;
@@ -1000,7 +1016,8 @@ function openPanel(view) {
   $('panel-body').scrollTop = 0;
   if (view === 'bookmarks') renderBookmarks();
   if (view === 'tabs') renderTabList();
-  if (view === 'plugins') loadPlugins();
+  if (view === 'plugins') { loadPlugins(); loadBrowserExtensions(); }
+  if (view === 'profiles') { loadProfiles(); loadVault(); }
   if (view === 'transfer') {
     refreshMigrationSources();
     refreshPasswordAccounts();
@@ -1021,9 +1038,11 @@ function collectionItem(item, open, onClose, closeLabel, isTab = false) {
   row.className = 'item';
   const link = toText('button', 'item-text', '');
   link.type = 'button';
-  link.append(toText('strong', 'item-title', item.title), toText('span', 'item-subtitle', displayUrl(item.url)));
+  const subtitle = item.folder?.length ? item.folder.join(' / ') + ' · ' + item.url
+    : item.group ? (item.group.name || 'Группа') + ' · ' + displayUrl(item.url) : displayUrl(item.url);
+  link.append(toText('strong', 'item-title', item.title), toText('span', 'item-subtitle', subtitle));
   link.addEventListener('click', open);
-  row.append(favicon(item.url, item.title, isTab ? item : null), link, button(closeLabel, 'close', 'icon-button', onClose));
+  row.append(favicon(item.url, item.title, isTab ? item : null, isTab ? null : item), link, button(closeLabel, 'close', 'icon-button', onClose));
   return row;
 }
 function renderTabList() {
@@ -1035,13 +1054,66 @@ function renderTabList() {
 }
 function renderBookmarks() {
   const query = $('bookmark-filter').value.trim().toLocaleLowerCase('ru');
-  const bookmarks = state.bookmarks.filter((b) => (b.title + ' ' + b.url).toLocaleLowerCase('ru').includes(query));
+  const bookmarks = state.bookmarks.filter((b) => [b.title, b.url, ...(b.folder ?? [])].join(' ').toLocaleLowerCase('ru').includes(query));
   const rows = bookmarks.map((b) => collectionItem(
     b, () => navigate(b.url), () => run('remove_bookmark_by_id', { id: b.id }), 'Удалить закладку'
   ));
   $('bookmarks').replaceChildren(...(rows.length ? rows : [toText('p', 'muted', query ? 'Ничего не найдено.' : 'Здесь появятся сохранённые сайты.')]));
 }
 $('bookmark-filter').addEventListener('input', renderBookmarks);
+
+function bookmarkButton(item, inFolder = false) {
+  const label = inFolder && item.folder.length > 1 ? item.folder.slice(1).join(' / ') + ' · ' + item.title : item.title;
+  const node = toText('button', 'bookmark-chip', '');
+  node.type = 'button';
+  node.title = item.title + ' · ' + item.url;
+  node.append(favicon(item.url, item.title, null, item), toText('span', 'bookmark-label', label));
+  node.addEventListener('click', () => navigate(item.url));
+  node.addEventListener('auxclick', e => {
+    if (e.button === 1) run('add_tab', { url: item.url, private: state.private });
+  });
+  return node;
+}
+function renderBookmarkStrip() {
+  const children = [];
+  const folders = new Map();
+  for (const item of state.bookmarks) {
+    const name = item.folder?.[0];
+    if (!name) {
+      children.push(bookmarkButton(item));
+      continue;
+    }
+    if (folders.has(name)) {
+      folders.get(name).push(item);
+      continue;
+    }
+    const items = [item];
+    folders.set(name, items);
+    const folder = button(name, 'folder', 'bookmark-chip', () => {
+      const reopens = bookmarkMenu.hidden || bookmarkAnchor !== folder;
+      closeLayer();
+      if (reopens) {
+        bookmarkAnchor = folder;
+        bookmarkMenu.style.left = Math.max(8, Math.min(folder.getBoundingClientRect().left, innerWidth - 322)) + 'px';
+        $('bookmark-menu-items').replaceChildren(...items.map(entry => bookmarkButton(entry, true)));
+        bookmarkMenu.hidden = false;
+        $('bookmark-menu-items').firstElementChild?.focus({ preventScroll: true });
+      }
+      setLayer();
+    });
+    folder.append(toText('span', 'bookmark-label', name));
+    children.push(folder);
+  }
+  $('bookmark-strip').replaceChildren(...children);
+}
+$('bookmark-library').addEventListener('click', () => openPanel('bookmarks'));
+$('bookmark-strip').addEventListener('wheel', e => {
+  const track = e.currentTarget;
+  if (track.scrollWidth > track.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+    e.preventDefault();
+    track.scrollLeft += e.deltaY;
+  }
+}, { passive: false });
 
 async function loadPlugins() {
   const records = await run('plugins_list');
@@ -1061,6 +1133,7 @@ async function loadPlugins() {
       $('plugin-name').textContent = manifest.name;
       $('plugin-css').value = code[0];
       $('plugin-js').value = code[1];
+      $('plugin-hosts').value = (record.hosts ?? []).join(', ');
       $('plugin-editor').hidden = false;
       $('plugin-editor').scrollIntoView({ block: 'nearest' });
     });
@@ -1086,7 +1159,7 @@ async function loadPlugins() {
 $('plugins-refresh').addEventListener('click', loadPlugins);
 $('plugins-folder').addEventListener('click', () => run('plugins_open_folder'));
 $('plugin-save').addEventListener('click', async () => {
-  if (await run('plugin_set_code', { id: editorId, css: $('plugin-css').value, js: $('plugin-js').value })) {
+  if (await run('plugin_set_code', { id: editorId, css: $('plugin-css').value, js: $('plugin-js').value, hosts: $('plugin-hosts').value })) {
     toast('Код сохранён. Обновите нужную вкладку');
   }
 });
@@ -1166,6 +1239,7 @@ function dispatch(action) {
   if (action === 'tab-list') return openPanel('tabs');
   if (action === 'bookmarks') return openPanel(action);
   if (action === 'transfer') return openPanel(action);
+  if (action === 'profiles') return openPanel(action);
   if (action === 'downloads') return toggleDownloads();
   if (action === 'next-tab' || action === 'previous-tab') return cycle(action === 'next-tab' ? 1 : -1);
   if (action.startsWith('tab-')) {
@@ -1212,7 +1286,7 @@ chrome.addEventListener('pointerdown', (e) => {
 document.addEventListener('keydown', (e) => {
   if (confirmDialog.open) return;
   if (e.key === 'Escape') {
-    if (!tabContext.hidden || !suggest.hidden || !panel.hidden || !menu.hidden || !downloads.hidden) dismissLayer();
+    if (!bookmarkMenu.hidden || !tabContext.hidden || !suggest.hidden || !panel.hidden || !menu.hidden || !downloads.hidden) dismissLayer();
     else if (document.activeElement === address) address.blur();
     return;
   }

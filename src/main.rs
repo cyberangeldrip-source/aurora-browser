@@ -6,8 +6,11 @@ mod core;
 mod downloads;
 mod migration;
 mod pages;
+mod profiles;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_extensions;
 
 use tauri::utils::config::WindowEffectsConfig;
 use tauri::utils::{WindowEffect, WindowEffectState};
@@ -35,15 +38,19 @@ pub mod layout {
         let size = window.inner_size()?;
         let width = f64::from(size.width) / scale;
         let height = f64::from(size.height) / scale;
-        let (compact, show_tabs) = {
+        let (compact, show_tabs, show_bookmarks) = {
             let settings = &state.store_guard().settings;
-            (settings.compact, settings.show_tab_row)
+            (
+                settings.compact,
+                settings.show_tab_row,
+                settings.show_bookmark_bar,
+            )
         };
         let strip = if state.media_fullscreen.load(Relaxed) != 0 {
             0.0
         } else {
             let address = if compact { 42.0 } else { 52.0 };
-            address + if show_tabs { 44.0 } else { 0.0 }
+            address + if show_tabs { 44.0 } else { 0.0 } + if show_bookmarks { 36.0 } else { 0.0 }
         };
         let overlay = f64::from(state.ui_overlay.load(Relaxed)).min((height - strip).max(0.0));
         Ok((width, height, strip, overlay))
@@ -167,6 +174,9 @@ fn run() -> tauri::Result<()> {
         commands::browser_sources,
         commands::import_browser,
         commands::import_bookmark_html,
+        commands::profiles_list,
+        commands::profile_create,
+        commands::profile_open,
         commands::window_ctl,
         commands::window_state,
         commands::win_drag,
@@ -180,17 +190,20 @@ fn run() -> tauri::Result<()> {
         commands::import_password_csv,
         commands::password_accounts,
         commands::fill_password,
+        commands::browser_extensions,
+        commands::password_manage,
     ];
     tauri::Builder::default()
         .register_uri_scheme_protocol("aurora", |ctx, request| {
             pages::handle(ctx.app_handle(), ctx.webview_label(), request)
         })
         .setup(|app| {
-            let data_dir = match std::env::var_os("AURORA_DATA_DIR") {
+            let root = match std::env::var_os("AURORA_DATA_DIR") {
                 Some(path) => std::path::PathBuf::from(path),
                 None => app.path().app_data_dir()?,
             };
-            let state = AppState::init(data_dir)?;
+            let profile = profiles::ActiveProfile::from_args(root)?;
+            let state = AppState::init(profile.path())?;
             let tab = state
                 .store_guard()
                 .active()
@@ -198,6 +211,7 @@ fn run() -> tauri::Result<()> {
                 .ok_or("Нет начальной вкладки")?;
             let chrome_profile = state.data_dir.join("Chrome");
             app.manage(state);
+            app.manage(profile);
             app.manage(layout::ActiveView::default());
             app.manage(layout::ChromeBounds::default());
 
@@ -263,7 +277,6 @@ fn run() -> tauri::Result<()> {
                     let store = state.store_guard();
                     state.save_settings(&store);
                     state.save_tabs(&store);
-                    state.save_history(&store);
                     state.save_bookmarks(&store);
                 }
                 state.save_downloads();
@@ -275,7 +288,11 @@ fn run() -> tauri::Result<()> {
                 #[cfg(windows)]
                 if matches!(
                     request.message.command(),
-                    "import_password_csv" | "password_accounts" | "fill_password"
+                    "import_password_csv"
+                        | "password_accounts"
+                        | "fill_password"
+                        | "browser_extensions"
+                        | "password_manage"
                 ) {
                     return vault_invoke(request);
                 }

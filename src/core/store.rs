@@ -6,6 +6,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::core::history_db;
 use crate::core::model::{Bookmark, HistoryEntry, Settings, Tab, TabsState};
 use crate::core::plugins::PluginManager;
 use crate::core::urls;
@@ -22,6 +23,7 @@ enum SaveJob {
     Settings(Settings),
     Tabs(TabsState),
     History(Vec<HistoryEntry>),
+    Visit(HistoryEntry, Option<(u64, u64)>),
     Bookmarks(Vec<Bookmark>),
     Downloads(Vec<Download>),
     Flush(Sender<()>),
@@ -50,11 +52,11 @@ fn write_json(dir: &Path, name: &str, value: impl serde::Serialize) {
     }
 }
 
-fn saver_loop(dir: PathBuf, rx: Receiver<SaveJob>) {
+fn saver_loop(dir: PathBuf, rx: Receiver<SaveJob>, mut db: rusqlite::Connection) {
     while let Ok(first) = rx.recv() {
         let mut settings = None;
         let mut tabs = None;
-        let mut history = None;
+        let mut history = Vec::new();
         let mut bookmarks = None;
         let mut downloads = None;
         let mut flushes = Vec::new();
@@ -62,7 +64,7 @@ fn saver_loop(dir: PathBuf, rx: Receiver<SaveJob>) {
             match job {
                 SaveJob::Settings(value) => settings = Some(value),
                 SaveJob::Tabs(value) => tabs = Some(value),
-                SaveJob::History(value) => history = Some(value),
+                job @ (SaveJob::History(_) | SaveJob::Visit(_, _)) => history.push(job),
                 SaveJob::Bookmarks(value) => bookmarks = Some(value),
                 SaveJob::Downloads(value) => downloads = Some(value),
                 SaveJob::Flush(reply) => flushes.push(reply),
@@ -74,8 +76,34 @@ fn saver_loop(dir: PathBuf, rx: Receiver<SaveJob>) {
         if let Some(value) = tabs {
             write_json(&dir, "tabs.json", value);
         }
-        if let Some(value) = history {
-            write_json(&dir, "history.json", value);
+        if !history.is_empty() {
+            let saved = (|| -> rusqlite::Result<()> {
+                let transaction = db.transaction()?;
+                for job in &history {
+                    match job {
+                        SaveJob::History(entries) => {
+                            transaction.execute("DELETE FROM visits", [])?;
+                            for entry in entries {
+                                history_db::write_visit(&transaction, entry)?;
+                            }
+                        }
+                        SaveJob::Visit(entry, oldest) => {
+                            history_db::write_visit(&transaction, entry)?;
+                            if let Some((ts, id)) = oldest {
+                                transaction.execute(
+                                    "DELETE FROM visits WHERE (ts,id) < (?1,?2)",
+                                    rusqlite::params![ts, id],
+                                )?;
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                transaction.commit()
+            })();
+            if let Err(error) = saved {
+                eprintln!("Aurora: history: {error}");
+            }
         }
         if let Some(value) = bookmarks {
             write_json(&dir, "bookmarks.json", value);
@@ -106,6 +134,7 @@ fn default_bookmarks() -> Vec<Bookmark> {
         id: index as u64 + 1,
         url: url.into(),
         title: title.into(),
+        folder: Vec::new(),
     })
     .collect()
 }
@@ -134,7 +163,7 @@ impl Store {
         }
     }
 
-    fn load(dir: &Path) -> Self {
+    fn load(dir: &Path, mut history: Vec<HistoryEntry>) -> Self {
         let mut settings: Settings = load_json(&dir.join("settings.json")).unwrap_or_default();
         settings.sanitize();
 
@@ -161,9 +190,8 @@ impl Store {
             tabs.active_id = tabs.tabs[0].id;
         }
 
-        let mut history: Vec<HistoryEntry> =
-            load_json(&dir.join("history.json")).unwrap_or_default();
-        history.retain(|entry| entry.id != u64::MAX && urls::bookmark_url(&entry.url).is_some());
+        history
+            .retain(|entry| entry.id < i64::MAX as u64 && urls::bookmark_url(&entry.url).is_some());
         if history.len() > crate::migration::HISTORY_LIMIT {
             history.drain(..history.len() - crate::migration::HISTORY_LIMIT);
         }
@@ -290,11 +318,17 @@ impl Store {
             .count()
     }
 
-    pub fn add_imported_tab(&mut self, url: String, title: &str) {
+    pub fn add_imported_tab(
+        &mut self,
+        url: String,
+        title: &str,
+        group: Option<crate::core::model::TabGroup>,
+    ) {
         let mut tab = self.allocate_tab(url);
         if !title.trim().is_empty() {
             tab.title = title.trim().to_owned();
         }
+        tab.group = group;
         self.tabs.tabs.push(tab);
     }
 
@@ -329,6 +363,10 @@ impl Store {
     }
 
     pub fn add_bookmark(&mut self, url: String, title: &str) {
+        self.add_bookmark_in(url, title, Vec::new());
+    }
+
+    pub fn add_bookmark_in(&mut self, url: String, title: &str, folder: Vec<String>) {
         while self.next_bookmark_id == u64::MAX
             || self
                 .bookmarks
@@ -346,6 +384,7 @@ impl Store {
             id: self.next_bookmark_id,
             url,
             title,
+            folder,
         });
         self.next_bookmark_id = self.next_bookmark_id.wrapping_add(1).max(1);
     }
@@ -442,7 +481,22 @@ impl AppState {
             .write(true)
             .open(data_dir.join("profile.lock"))?;
         profile_lock.try_lock().map_err(io::Error::other)?;
-        let store = Store::load(&data_dir);
+        let legacy = data_dir.join("history.json");
+        let mut imported_legacy = false;
+        let db = history_db::open(&data_dir, || {
+            let entries = load_json::<Vec<HistoryEntry>>(&legacy);
+            imported_legacy = entries.is_some();
+            let mut entries = entries.unwrap_or_default();
+            entries.retain(|entry| entry.id < i64::MAX as u64 && entry.ts <= i64::MAX as u64);
+            entries
+        })
+        .map_err(io::Error::other)?;
+        let store = Store::load(&data_dir, history_db::read(&db).map_err(io::Error::other)?);
+        if imported_legacy {
+            if let Err(error) = fs::remove_file(&legacy) {
+                eprintln!("Aurora: не удалось удалить прежний файл истории: {error}");
+            }
+        }
         let plugins = PluginManager::init(&data_dir);
         let downloads = Downloads::load(&data_dir);
         let mut nonce = [0u8; 32];
@@ -453,7 +507,7 @@ impl AppState {
         let dir = data_dir.clone();
         std::thread::Builder::new()
             .name("aurora-saver".into())
-            .spawn(move || saver_loop(dir, receiver))?;
+            .spawn(move || saver_loop(dir, receiver, db))?;
 
         Ok(Self {
             data_dir,
@@ -510,6 +564,13 @@ impl AppState {
         let _ = self.saver.send(SaveJob::History(store.history.clone()));
     }
 
+    pub fn save_visit(&self, entry: &HistoryEntry, oldest: Option<&HistoryEntry>) {
+        let _ = self.saver.send(SaveJob::Visit(
+            entry.clone(),
+            oldest.map(|entry| (entry.ts, entry.id)),
+        ));
+    }
+
     pub fn save_bookmarks(&self, store: &Store) {
         let _ = self.saver.send(SaveJob::Bookmarks(store.bookmarks.clone()));
     }
@@ -539,9 +600,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migrates_large_history_and_updates_one_visit() {
+        let dir = std::env::temp_dir().join(format!("aurora-history-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let total = 50_000u64;
+        let now = now_secs();
+        let entries: Vec<_> = (1..=total)
+            .map(|id| HistoryEntry {
+                id,
+                title: format!("Visit {id}"),
+                url: format!("https://example.org/{id}"),
+                ts: now - total + id,
+            })
+            .collect();
+        write_json(&dir, "history.json", &entries);
+        let state = AppState::init(dir.clone()).unwrap();
+        assert!(!dir.join("history.json").exists());
+        {
+            let mut store = state.store_guard();
+            assert_eq!(store.history.len(), total as usize);
+            assert!(store.push_history("https://example.org/latest", "Latest"));
+            state.save_visit(store.history.last().unwrap(), store.history.first());
+        }
+        state.flush_saves();
+        let db = rusqlite::Connection::open(dir.join("history.sqlite3")).unwrap();
+        let entries = history_db::read(&db).unwrap();
+        assert_eq!(entries.len(), total as usize);
+        assert_eq!(entries.first().unwrap().id, 2);
+        assert_eq!(entries.last().unwrap().url, "https://example.org/latest");
+        drop(db);
+        drop(state);
+    }
+
+    #[test]
     fn moving_tabs_preserves_the_active_tab_and_rejects_stale_targets() {
-        let mut store =
-            Store::load(&std::env::temp_dir().join("aurora-reorder-test-empty-profile"));
+        let mut store = Store::load(
+            &std::env::temp_dir().join("aurora-reorder-test-empty-profile"),
+            Vec::new(),
+        );
         let first = store.tabs.tabs[0].id;
         let second = store.allocate_tab("https://example.com/".into());
         let third = store.allocate_tab("https://example.org/".into());

@@ -116,7 +116,13 @@ pub fn handle(app: &AppHandle, webview: &str, request: Request<Vec<u8>>) -> Resp
         let mut icon = response(StatusCode::OK, media_type, bytes.into_owned(), "no-store");
         icon.headers_mut().insert(
             "Cross-Origin-Resource-Policy",
-            "same-origin".parse().expect("valid resource policy"),
+            if collection == "favorite" && webview == "ui" {
+                "cross-origin"
+            } else {
+                "same-origin"
+            }
+            .parse()
+            .expect("valid resource policy"),
         );
         return icon;
     }
@@ -134,6 +140,14 @@ pub fn handle(app: &AppHandle, webview: &str, request: Request<Vec<u8>>) -> Resp
         "res/wallpaper.js" => asset(
             "text/javascript; charset=utf-8",
             include_bytes!("../../ui/wallpaper.js"),
+        ),
+        "res/tooltip.js" => asset(
+            "text/javascript; charset=utf-8",
+            include_bytes!("../../ui/tooltip.js"),
+        ),
+        "res/tooltip.css" => asset(
+            "text/css; charset=utf-8",
+            include_bytes!("../../ui/tooltip.css"),
         ),
         "res/aurora-glass.jpg" => asset("image/jpeg", include_bytes!("../../ui/aurora-glass.jpg")),
         "search" => {

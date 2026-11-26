@@ -26,6 +26,7 @@ pub struct Settings {
     pub compact: bool,
     /// Показывать ряд вкладок
     pub show_tab_row: bool,
+    pub show_bookmark_bar: bool,
     /// "google" | "yandex" | "duckduckgo" | "bing"
     pub search_engine: String,
     /// Стартовая страница
@@ -49,6 +50,7 @@ impl Default for Settings {
             animated_wallpaper: true,
             compact: false,
             show_tab_row: true,
+            show_bookmark_bar: true,
             search_engine: "google".into(),
             homepage: "aurora://home/".into(),
             history_retention_days: 30,
@@ -96,6 +98,8 @@ pub struct Tab {
     pub label: String,
     pub url: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<TabGroup>,
     #[serde(
         default,
         skip_deserializing,
@@ -124,6 +128,7 @@ impl Tab {
             id,
             label: format!("tab-{id}"),
             title: crate::core::urls::title_for_url(&url),
+            group: None,
             url,
             private: false,
             loading: false,
@@ -135,6 +140,13 @@ impl Tab {
             favicon_revision: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TabGroup {
+    pub id: String,
+    pub name: String,
+    pub color: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -161,6 +173,8 @@ pub struct Bookmark {
     pub id: u64,
     pub url: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folder: Vec<String>,
 }
 
 // ---------- Плагины ----------
@@ -190,4 +204,5 @@ pub struct PluginInfo {
     pub enabled: bool,
     pub has_css: bool,
     pub has_js: bool,
+    pub hosts: Vec<String>,
 }

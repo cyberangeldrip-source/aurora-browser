@@ -132,6 +132,7 @@ pub fn ui_state(app: AppHandle) -> Value {
                 "url": tab.url,
                 "title": tab.title,
                 "private": tab.private,
+                "group": tab.group,
                 "faviconRevision": tab.favicon_revision,
             })
         })
@@ -170,7 +171,8 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> Settings {
             || animations_changed
             || settings.search_engine != store.settings.search_engine;
         let update_layout = settings.compact != store.settings.compact
-            || settings.show_tab_row != store.settings.show_tab_row;
+            || settings.show_tab_row != store.settings.show_tab_row
+            || settings.show_bookmark_bar != store.settings.show_bookmark_bar;
         let changed_retention =
             settings.history_retention_days != store.settings.history_retention_days;
         let changed_restore = settings.restore_session != store.settings.restore_session;
@@ -362,10 +364,11 @@ pub async fn plugin_set_code(
     id: String,
     css: String,
     js: String,
+    hosts: Option<String>,
 ) -> Result<(), String> {
     app.state::<AppState>()
         .plugins_guard()
-        .set_code(&id, &css, &js)
+        .set_code(&id, &css, &js, hosts.as_deref())
         .map_err(|error| error.to_string())
 }
 
@@ -566,6 +569,52 @@ fn password_target(app: &AppHandle) -> Option<(String, tauri::Webview)> {
 
 #[cfg(windows)]
 #[tauri::command]
+pub async fn password_manage(
+    app: AppHandle,
+    action: String,
+    site: String,
+    username: String,
+    password: Option<String>,
+) -> Result<Vec<(String, String)>, String> {
+    let dir = app.state::<AppState>().data_dir.clone();
+    let password = password.map(zeroize::Zeroizing::new);
+    tauri::async_runtime::spawn_blocking(move || {
+        migration::passwords::manage(&dir, &action, &site, username, password)
+    })
+    .await
+    .map_err(|_| "Ошибка хранилища")?
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub async fn browser_extensions(
+    app: AppHandle,
+    action: String,
+    value: String,
+    enabled: Option<bool>,
+) -> Result<Vec<crate::windows_extensions::Extension>, String> {
+    use crate::windows_extensions::{self, Request};
+    let request = match action.as_str() {
+        "list" => Request::List,
+        "install" => Request::Install(windows_extensions::folder(&value)?),
+        "enable" => Request::Enable(value, enabled.unwrap_or(false)),
+        "remove" => Request::Remove(value),
+        _ => return Err("Неизвестное действие с расширением".into()),
+    };
+    let state = app.state::<AppState>();
+    let view = state
+        .store_guard()
+        .tabs
+        .tabs
+        .iter()
+        .filter(|tab| !tab.private)
+        .find_map(|tab| app.get_webview(&tab.label))
+        .ok_or("Откройте обычную вкладку для управления расширениями")?;
+    windows_extensions::request(view, request).await
+}
+
+#[cfg(windows)]
+#[tauri::command]
 pub async fn password_accounts(
     app: AppHandle,
 ) -> Result<Vec<migration::passwords::Account>, String> {
@@ -613,6 +662,22 @@ pub fn window_ctl(app: AppHandle, action: &str) -> Result<(), String> {
         _ => return Err("Неизвестная команда окна".into()),
     };
     result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn profiles_list(app: AppHandle) -> Value {
+    let active = app.state::<crate::profiles::ActiveProfile>();
+    json!({ "current": active.id, "profiles": crate::profiles::list(&active.root) })
+}
+
+#[tauri::command]
+pub fn profile_create(app: AppHandle, name: String) -> Result<crate::profiles::Profile, String> {
+    crate::profiles::create(&app.state::<crate::profiles::ActiveProfile>().root, &name)
+}
+
+#[tauri::command]
+pub fn profile_open(app: AppHandle, id: String) -> Result<(), String> {
+    crate::profiles::launch(&app.state::<crate::profiles::ActiveProfile>(), &id)
 }
 
 #[tauri::command]

@@ -67,7 +67,9 @@ fn update_source(app: &AppHandle, id: u32, url: &url::Url, same_document: bool, 
         if record && !tab.private {
             let title = tab.title.clone();
             if store.push_history(url.as_str(), &title) {
-                state.save_history(&store);
+                if let Some(entry) = store.history.last() {
+                    state.save_visit(entry, store.history.first());
+                }
             }
         }
         state.save_tabs(&store);
@@ -99,7 +101,7 @@ pub fn update_title(app: &AppHandle, id: u32, url: &url::Url, title: &str) {
             .find(|entry| !private && entry.url == url.as_str())
         {
             entry.title = title;
-            state.save_history(&store);
+            state.save_visit(entry, None);
         }
         state.save_tabs(&store);
     }
@@ -137,7 +139,9 @@ pub fn completed(app: &AppHandle, id: u32, url: &url::Url, success: bool) {
             private = tab.private;
             let title = tab.title.clone();
             if success && !private && store.push_history(url.as_str(), &title) {
-                state.save_history(&store);
+                if let Some(entry) = store.history.last() {
+                    state.save_visit(entry, store.history.first());
+                }
             }
         }
     }
@@ -239,6 +243,8 @@ pub fn ensure_view(app: &AppHandle, tab: &Tab, start: &str) -> Result<Webview, S
     let builder = tauri::webview::WebviewBuilder::new(&tab.label, WebviewUrl::External(url))
         .on_navigation(urls::can_visit)
         .incognito(tab.private);
+    #[cfg(windows)]
+    let builder = builder.browser_extensions_enabled(true);
     #[cfg(not(windows))]
     let builder = builder.on_page_load({
         let id = tab.id;
@@ -252,7 +258,9 @@ pub fn ensure_view(app: &AppHandle, tab: &Tab, start: &str) -> Result<Webview, S
     });
 
     // A separate test or custom profile includes the engine's cookies and storage as well.
-    let builder = if std::env::var_os("AURORA_DATA_DIR").is_some() {
+    let builder = if std::env::var_os("AURORA_DATA_DIR").is_some()
+        || !app.state::<crate::profiles::ActiveProfile>().id.is_empty()
+    {
         builder.data_directory(state.data_dir.join("WebView"))
     } else {
         builder

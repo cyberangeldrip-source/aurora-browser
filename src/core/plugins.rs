@@ -38,14 +38,27 @@ impl PluginManager {
         for (id, manifest, css, js) in bundled::bundled_plugins() {
             let plugin_dir = dir.join(id);
             let _ = fs::create_dir_all(&plugin_dir);
+            if dir
+                .canonicalize()
+                .ok()
+                .zip(plugin_dir.canonicalize().ok())
+                .is_none_or(|(root, path)| path != root.join(id))
+            {
+                continue;
+            }
             for (file, contents) in [
                 ("manifest.json", manifest),
                 ("style.css", css),
                 ("script.js", js),
             ] {
                 let target = plugin_dir.join(file);
-                if !target.exists() {
-                    let _ = fs::write(target, contents);
+                if let Ok(mut file) = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target)
+                {
+                    use std::io::Write;
+                    let _ = file.write_all(contents.as_bytes());
                 }
             }
         }
@@ -92,6 +105,9 @@ impl PluginManager {
                     enabled: self.enabled.get(&manifest.id).copied().unwrap_or(false),
                     has_css: location.join("style.css").is_file(),
                     has_js: location.join("script.js").is_file(),
+                    hosts: read_local_file(&location, "hosts.json")
+                        .and_then(|text| serde_json::from_str(&text).ok())
+                        .unwrap_or_default(),
                     manifest,
                 });
             }
@@ -145,7 +161,13 @@ impl PluginManager {
         ))
     }
 
-    pub fn set_code(&mut self, id: &str, css: &str, js: &str) -> io::Result<()> {
+    pub fn set_code(
+        &mut self,
+        id: &str,
+        css: &str,
+        js: &str,
+        hosts: Option<&str>,
+    ) -> io::Result<()> {
         if css.len() > MAX_PLUGIN_FILE || js.len() > MAX_PLUGIN_FILE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -155,32 +177,32 @@ impl PluginManager {
         let path = self
             .location(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Плагин не найден"))?;
+        let hosts = hosts.map(parse_hosts).transpose()?;
         write_file(&path.join("style.css"), css.as_bytes())?;
         write_file(&path.join("script.js"), js.as_bytes())?;
+        if let Some(hosts) = hosts {
+            write_file(&path.join("hosts.json"), &serde_json::to_vec(&hosts)?)?;
+        }
         self.refresh();
         Ok(())
     }
 
     fn compile_script(&mut self) {
-        let mut css = String::new();
         let mut scripts = Vec::new();
         for plugin in &self.entries {
             if !plugin.enabled || !matches!(plugin.manifest.run_on.as_str(), "web" | "all") {
                 continue;
             }
             if let Some((style, js)) = self.get_code(&plugin.manifest.id) {
-                css.push_str(&style);
-                css.push('\n');
-                if !js.trim().is_empty() {
-                    scripts.push(js);
+                if !style.trim().is_empty() || !js.trim().is_empty() {
+                    scripts.push((&plugin.hosts, style, js));
                 }
             }
         }
-        if css.trim().is_empty() && scripts.is_empty() {
+        if scripts.is_empty() {
             self.script.clear();
             return;
         }
-        let style = serde_json::to_string(&css).expect("serialization of a string");
         let scripts = serde_json::to_string(&scripts).expect("serialization of strings");
         self.script = format!(
             r#"(function () {{
@@ -190,9 +212,10 @@ impl PluginManager {
   if (!root || document.getElementById('aurora-plugins-css')) return;
   const style = document.createElement('style');
   style.id = 'aurora-plugins-css';
-  style.textContent = {style};
+  const matching = {scripts}.filter(([hosts]) => !hosts.length || hosts.includes(location.hostname));
+  style.textContent = matching.map(([, css]) => css).join('\n');
   root.appendChild(style);
-  for (const source of {scripts}) {{
+  for (const [, , source] of matching) {{
     try {{ (0, eval)(source); }} catch (error) {{ console.warn('Aurora plugin', error); }}
   }}
 }})();"#
@@ -202,6 +225,30 @@ impl PluginManager {
     pub fn script(&self) -> &str {
         &self.script
     }
+}
+
+fn parse_hosts(input: &str) -> io::Result<Vec<String>> {
+    let mut hosts = Vec::new();
+    for raw in input
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Перечислите домены через запятую, без ссылки или пути",
+            )
+        };
+        if raw.len() > 253 || hosts.len() >= 100 || raw.contains(['/', '@', ':', '?', '#', '*']) {
+            return Err(invalid());
+        }
+        let host = url::Host::parse(raw).map_err(|_| invalid())?.to_string();
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    Ok(hosts)
 }
 
 #[cfg(test)]

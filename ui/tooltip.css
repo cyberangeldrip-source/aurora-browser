@@ -1,0 +1,11 @@
+.aurora-tooltip {
+  position: fixed; top: 0; left: 0; z-index: 99; pointer-events: none;
+  max-width: min(330px, calc(100vw - 12px)); padding: 5px 9px;
+  border: 1px solid var(--edge); border-radius: 9px;
+  color: var(--ink, var(--text)); font-size: 12px; line-height: 1.35;
+  overflow-wrap: anywhere;
+  background: radial-gradient(ellipse at 15% -50%, rgb(186 225 255 / .19), transparent 66%),
+    linear-gradient(145deg, var(--glass, rgb(var(--panel-base) / .89)), color-mix(in srgb, var(--accent) 21%, var(--glass, rgb(var(--tray) / .88))));
+  backdrop-filter: blur(13px) saturate(130%);
+  box-shadow: inset 0 1px rgb(206 238 255 / .21), 0 5px 14px rgb(5 8 27 / .29);
+}

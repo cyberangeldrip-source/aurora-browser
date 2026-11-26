@@ -44,7 +44,9 @@ fn shell(title: &str, body: &str, data: &PageData<'_>, page: &str) -> String {
 <title>{title} · Aurora</title>
 <link rel="icon" href="{base}/favicon">
 <link rel="stylesheet" href="{base}/res/content.css">
+<link rel="stylesheet" href="{base}/res/tooltip.css">
 <script defer src="{base}/res/pages.js"></script>
+<script defer src="{base}/res/tooltip.js"></script>
 </head>
 <body class="{page}" data-token="{token}">
 {body}
@@ -279,11 +281,13 @@ mod tests {
                     id: 1,
                     title: "<GitHub>".into(),
                     url: "https://github.com/".into(),
+                    folder: Vec::new(),
                 },
                 Bookmark {
                     id: 2,
                     title: "Unknown".into(),
                     url: "javascript:void(0)".into(),
+                    folder: Vec::new(),
                 },
             ],
             history: Vec::new(),

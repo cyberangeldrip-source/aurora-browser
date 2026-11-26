@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{read_limit, Engine, Links, FILE_LIMIT};
+use crate::core::model::TabGroup;
 
 pub(super) fn files(profile: &Path, engine: Engine) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -85,6 +86,7 @@ fn firefox(bytes: &[u8]) -> Option<Links> {
                     links.push((
                         url.into(),
                         entry["title"].as_str().unwrap_or_default().into(),
+                        firefox_group(window, tab),
                     ));
                 }
             }
@@ -93,11 +95,36 @@ fn firefox(bytes: &[u8]) -> Option<Links> {
     Some(links)
 }
 
+fn firefox_group(window: &Value, tab: &Value) -> Option<TabGroup> {
+    let id = tab["groupId"].as_str()?;
+    let group = window["groups"]
+        .as_array()?
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some(id))?;
+    let palette = [
+        "gray", "blue", "red", "yellow", "green", "pink", "purple", "orange", "cyan",
+    ];
+    Some(TabGroup {
+        id: id.chars().take(120).collect(),
+        name: group["name"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(100)
+            .collect(),
+        color: palette
+            .iter()
+            .position(|name| group["color"].as_str() == Some(*name))
+            .unwrap_or(0) as u8,
+    })
+}
+
 #[derive(Default)]
 struct SessionTab {
     window: i32,
     position: i32,
     selected: Option<i32>,
+    group: Option<[u8; 16]>,
     navigations: BTreeMap<i32, (String, String)>,
 }
 
@@ -140,6 +167,7 @@ fn chromium(bytes: &[u8]) -> Option<Links> {
     let mut records = bytes.get(8..)?;
     let mut tabs: HashMap<i32, SessionTab> = HashMap::new();
     let mut windows = HashMap::new();
+    let mut groups = HashMap::new();
     let mut valid = false;
     while let Some(header) = records.get(..2) {
         let size = u16::from_le_bytes([header[0], header[1]]) as usize;
@@ -195,6 +223,19 @@ fn chromium(bytes: &[u8]) -> Option<Links> {
                         .collect();
                 }
             }
+            (25, Some(id), _) => {
+                let offset = if payload.len() >= 32 { 8 } else { 4 };
+                let group = payload
+                    .get(offset..offset + 16)
+                    .and_then(|bytes| bytes.try_into().ok());
+                let present = payload.get(offset + 16) == Some(&1);
+                tabs.entry(id).or_default().group = group.filter(|_| present);
+            }
+            (27, _, _) => {
+                if let Some((token, group)) = group_metadata(payload) {
+                    groups.insert(token, group);
+                }
+            }
             _ => {}
         }
     }
@@ -221,10 +262,35 @@ fn chromium(bytes: &[u8]) -> Option<Links> {
                             .map(|(index, _)| *index)
                     })
                     .or_else(|| tab.navigations.last_key_value().map(|(index, _)| *index))?;
-                tab.navigations.remove(&index)
+                let (url, title) = tab.navigations.remove(&index)?;
+                Some((
+                    url,
+                    title,
+                    tab.group.and_then(|id| groups.get(&id).cloned()),
+                ))
             })
             .collect(),
     )
+}
+
+fn group_metadata(bytes: &[u8]) -> Option<([u8; 16], TabGroup)> {
+    let size = usize::try_from(int(bytes, 0)?).ok()?;
+    let bytes = bytes.get(4..4 + size)?;
+    let token: [u8; 16] = bytes.get(..16)?.try_into().ok()?;
+    let length = usize::try_from(int(bytes, 16)?).ok()?.checked_mul(2)?;
+    let title = bytes
+        .get(20..20 + length)?
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair));
+    let name: String = char::decode_utf16(title)
+        .take(100)
+        .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect();
+    let color = int(bytes, 20 + length.next_multiple_of(4))?.clamp(0, 8) as u8;
+    let id = token.iter().map(|byte| format!("{byte:02x}")).collect();
+    Some((token, TabGroup { id, name, color }))
 }
 
 #[cfg(test)]
@@ -259,7 +325,7 @@ mod tests {
         bytes.extend([8, 0, 6]);
         assert_eq!(
             super::chromium(&bytes).unwrap(),
-            [("https://example.org/".into(), String::new())]
+            [("https://example.org/".into(), String::new(), None)]
         );
     }
 }

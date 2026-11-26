@@ -14,7 +14,8 @@ use crate::core::{model::HistoryEntry, store::AppState, urls};
 pub mod passwords;
 mod sessions;
 
-pub type Links = Vec<(String, String)>;
+pub type Links = Vec<(String, String, Option<crate::core::model::TabGroup>)>;
+pub type BookmarkLinks = Vec<(String, String, Vec<String>)>;
 pub const HISTORY_LIMIT: usize = 50_000;
 const FILE_LIMIT: u64 = 64 * 1024 * 1024;
 
@@ -53,7 +54,7 @@ pub struct Selection {
 
 #[derive(Default)]
 pub struct BrowserData {
-    pub bookmarks: Links,
+    pub bookmarks: BookmarkLinks,
     pub history: Vec<HistoryEntry>,
     pub tabs: Links,
     pub downloads: Vec<crate::downloads::Download>,
@@ -300,29 +301,70 @@ fn database(source: &Source) -> rusqlite::Result<Connection> {
     Ok(db)
 }
 
-fn bookmarks(source: &Source) -> Result<Links, ()> {
+fn bookmarks(source: &Source) -> Result<BookmarkLinks, ()> {
     if source.engine == Engine::Firefox {
         let db = database(source).map_err(|_| ())?;
-        let mut query = db.prepare("SELECT p.url, COALESCE(b.title,p.title,'') FROM moz_bookmarks b JOIN moz_places p ON b.fk=p.id WHERE b.type=1 ORDER BY b.id").map_err(|_| ())?;
+        let mut folders_query = db
+            .prepare("SELECT id,parent,COALESCE(title,'') FROM moz_bookmarks WHERE type=2")
+            .map_err(|_| ())?;
+        let folders: std::collections::HashMap<i64, (i64, String)> = folders_query
+            .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+            .map_err(|_| ())?
+            .filter_map(Result::ok)
+            .collect();
+        let mut query = db.prepare("SELECT p.url, COALESCE(b.title,p.title,''), b.parent FROM moz_bookmarks b JOIN moz_places p ON b.fk=p.id WHERE b.type=1 ORDER BY b.position,b.id").map_err(|_| ())?;
         let rows = query
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([], |row| {
+                let mut folder = Vec::new();
+                let mut parent: i64 = row.get(2)?;
+                for _ in 0..16 {
+                    let Some((next, name)) = folders.get(&parent) else {
+                        break;
+                    };
+                    if !name.trim().is_empty() {
+                        folder.push(name.chars().take(90).collect());
+                    }
+                    parent = *next;
+                }
+                folder.reverse();
+                Ok((row.get(0)?, row.get(1)?, folder))
+            })
             .map_err(|_| ())?;
         return Ok(rows.filter_map(Result::ok).collect());
     }
     let bytes = read_limit(&source.path.join("Bookmarks")).map_err(|_| ())?;
     let data: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
     let roots = data["roots"].as_object().ok_or(())?;
-    let mut queue: Vec<_> = roots.values().rev().collect();
+    let mut queue: Vec<_> = roots
+        .iter()
+        .rev()
+        .map(|(key, node)| (node, Vec::<String>::new(), key == "bookmark_bar"))
+        .collect();
     let mut links = Vec::new();
-    while let Some(node) = queue.pop() {
+    while let Some((node, folder, skip_name)) = queue.pop() {
         if let Some(url) = node["url"].as_str() {
             links.push((
                 url.to_owned(),
                 node["name"].as_str().unwrap_or_default().to_owned(),
+                folder.clone(),
             ));
         }
         if let Some(children) = node["children"].as_array() {
-            queue.extend(children.iter().rev());
+            let mut folder = folder;
+            if let Some(name) = node["name"]
+                .as_str()
+                .filter(|name| !skip_name && !name.trim().is_empty())
+            {
+                if folder.len() < 16 {
+                    folder.push(name.chars().take(90).collect());
+                }
+            }
+            queue.extend(
+                children
+                    .iter()
+                    .rev()
+                    .map(|child| (child, folder.clone(), false)),
+            );
         }
     }
     Ok(links)
@@ -398,17 +440,40 @@ fn download_history(source: &Source) -> Result<Vec<crate::downloads::Download>, 
         .collect())
 }
 
-pub fn html_bookmarks(document: &str) -> Result<Links, String> {
+pub fn html_bookmarks(document: &str) -> Result<BookmarkLinks, String> {
     if document.len() as u64 > FILE_LIMIT {
         return Err("Файл закладок слишком большой".into());
     }
     let document = scraper::Html::parse_document(document);
     let selector = scraper::Selector::parse("a[href]").expect("selector is valid");
-    let links: Links = document
+    let heading = scraper::Selector::parse(":scope > h3").expect("selector is valid");
+    let links: BookmarkLinks = document
         .select(&selector)
         .filter_map(|tag| {
             let url = urls::bookmark_url(tag.value().attr("href")?)?;
-            Some((url, tag.text().collect::<String>().trim().to_owned()))
+            let mut folders: Vec<String> = tag
+                .ancestors()
+                .filter_map(scraper::ElementRef::wrap)
+                .filter(|ancestor| ancestor.value().name() == "dt")
+                .filter_map(|ancestor| ancestor.select(&heading).next())
+                .map(|folder| {
+                    folder
+                        .text()
+                        .collect::<String>()
+                        .trim()
+                        .chars()
+                        .take(90)
+                        .collect()
+                })
+                .filter(|name: &String| !name.is_empty())
+                .take(16)
+                .collect();
+            folders.reverse();
+            Some((
+                url,
+                tag.text().collect::<String>().trim().to_owned(),
+                folders,
+            ))
         })
         .collect();
     if links.is_empty() {
@@ -428,16 +493,31 @@ pub fn apply(state: &AppState, data: BrowserData) -> Summary {
         .iter()
         .map(|item| item.url.clone())
         .collect();
-    for (url, title) in data.bookmarks {
+    let mut restored_folders = 0;
+    for (url, title, folder) in data.bookmarks {
         if let Some(url) = urls::bookmark_url(&url) {
             if known.insert(url.clone()) {
-                store.add_bookmark(url, &title);
+                store.add_bookmark_in(url, &title, folder);
                 summary.bookmarks += 1;
+            } else if !folder.is_empty() {
+                if let Some(bookmark) = store
+                    .bookmarks
+                    .iter_mut()
+                    .find(|item| item.url == url && item.folder.is_empty())
+                {
+                    bookmark.folder = folder;
+                    restored_folders += 1;
+                }
             }
         }
     }
-    if summary.bookmarks != 0 {
+    if summary.bookmarks != 0 || restored_folders != 0 {
         state.save_bookmarks(&store);
+    }
+    if restored_folders != 0 {
+        summary
+            .notices
+            .push("Обновлены папки ранее импортированных закладок.");
     }
     if data.keep_history
         && store.settings.history_retention_days != 0
@@ -465,16 +545,32 @@ pub fn apply(state: &AppState, data: BrowserData) -> Summary {
         .filter(|tab| !tab.private)
         .map(|tab| tab.url.clone())
         .collect();
-    for (url, title) in data.tabs {
+    let mut updated_groups = false;
+    for (url, title, group) in data.tabs {
         if let Some(url) = urls::bookmark_url(&url) {
             if known.insert(url.clone()) {
-                store.add_imported_tab(url, &title);
+                store.add_imported_tab(url, &title, group);
                 summary.tabs += 1;
+            } else if let Some(group) = group {
+                if let Some(tab) = store
+                    .tabs
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| !tab.private && tab.url == url && tab.group.is_none())
+                {
+                    tab.group = Some(group);
+                    updated_groups = true;
+                }
             }
         }
     }
-    if summary.tabs != 0 {
+    if summary.tabs != 0 || updated_groups {
         state.save_tabs(&store);
+    }
+    if updated_groups {
+        summary
+            .notices
+            .push("Восстановлены группы ранее импортированных вкладок.");
     }
     drop(store);
     summary.downloads = state.downloads_guard().merge_imported(data.downloads);
@@ -530,6 +626,9 @@ mod tests {
     #[test]
     fn exported_html_decodes_labels_and_rejects_non_web_targets() {
         let links = super::html_bookmarks(r#"<DL><DT><A HREF="https://example.org/">A &amp; B</A><DT><A HREF="javascript:alert(1)">Skip</A></DL>"#).unwrap();
-        assert_eq!(links, [("https://example.org/".into(), "A & B".into())]);
+        assert_eq!(
+            links,
+            [("https://example.org/".into(), "A & B".into(), Vec::new())]
+        );
     }
 }

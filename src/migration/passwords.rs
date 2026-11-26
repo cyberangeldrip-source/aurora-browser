@@ -171,14 +171,63 @@ pub fn import(profile: &Path, input: Zeroizing<String>) -> Result<PasswordImport
     }
     if imported != 0 {
         let entries: Vec<_> = merged.into_values().collect();
-        let plaintext = Zeroizing::new(
-            serde_json::to_vec(&entries).map_err(|_| "Не удалось подготовить хранилище")?,
-        );
-        let protected = protect(&plaintext, true)?;
-        crate::core::store::write_file(&profile.join(VAULT_FILE), &protected)
-            .map_err(|_| "Не удалось сохранить хранилище Aurora")?;
+        save(profile, &entries)?;
     }
     Ok(PasswordImport { imported, skipped })
+}
+
+fn save(profile: &Path, entries: &[Login]) -> Result<(), String> {
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(entries).map_err(|_| "Не удалось подготовить хранилище")?,
+    );
+    let protected = protect(&plaintext, true)?;
+    crate::core::store::write_file(&profile.join(VAULT_FILE), &protected)
+        .map_err(|_| "Не удалось сохранить хранилище Aurora".into())
+}
+
+pub fn manage(
+    profile: &Path,
+    action: &str,
+    site: &str,
+    username: String,
+    password: Option<Zeroizing<String>>,
+) -> Result<Vec<(String, String)>, String> {
+    let _gate = VAULT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut entries = load(profile)?;
+    if action != "list" {
+        let site = origin(site).ok_or("Укажите HTTPS-адрес сайта")?;
+        let position = entries
+            .iter()
+            .position(|entry| entry.origin == site && entry.username == username);
+        match action {
+            "save" => {
+                let password = password
+                    .filter(|value| !value.is_empty() && value.len() <= 8192)
+                    .ok_or("Введите новый пароль")?;
+                if username.len() > 4096 {
+                    return Err("Имя пользователя слишком длинное".into());
+                }
+                if let Some(position) = position {
+                    entries.remove(position);
+                }
+                entries.push(Login {
+                    origin: site,
+                    username,
+                    password: password.to_string(),
+                });
+            }
+            "remove" => {
+                entries.remove(position.ok_or("Сохранённый вход не найден")?);
+            }
+            _ => return Err("Неизвестное действие с хранилищем".into()),
+        }
+        entries.sort_by(|a, b| a.origin.cmp(&b.origin).then(a.username.cmp(&b.username)));
+        save(profile, &entries)?;
+    }
+    Ok(entries
+        .iter()
+        .map(|entry| (entry.origin.clone(), entry.username.clone()))
+        .collect())
 }
 
 pub fn accounts(profile: &Path, origin: &str) -> Result<Vec<Account>, String> {
@@ -229,8 +278,9 @@ pub async fn fill(
             visible(input) && input.autocomplete !== 'new-password');
         if (fields.length !== 1) return false;
         const password = fields[0];
-        if (!password.form || new URL(password.form.action, location.href).origin !== login.origin) return false;
-        const users = [...password.form.querySelectorAll('input[autocomplete="username"], input[type="email"], input[type="text"], input:not([type])')].filter(visible);
+        if (password.form && new URL(password.form.action, location.href).origin !== login.origin) return false;
+        const selector = password.form ? 'input[autocomplete="username"], input[type="email"], input[type="text"], input:not([type])' : 'input[autocomplete="username"], input[type="email"]';
+        const users = [...(password.form ?? document).querySelectorAll(selector)].filter(visible);
         const user = users.find(input => input.autocomplete === 'username') ?? (users.length === 1 ? users[0] : null);
         const set = (input, value) => {{
             Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
