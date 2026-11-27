@@ -479,6 +479,20 @@ pub fn refresh_home(app: &AppHandle) {
     }
 }
 
+pub fn refresh_history(app: &AppHandle) {
+    if let Some(view) = active_webview(app) {
+        if view
+            .url()
+            .ok()
+            .and_then(|url| urls::internal_path(url.as_str()))
+            .as_deref()
+            == Some("history")
+        {
+            let _ = view.eval("location.reload()");
+        }
+    }
+}
+
 pub fn set_wallpaper(app: &AppHandle, enabled: bool) {
     let script = format!(
         "document.getElementById('live-wallpaper')?.setAttribute('data-enabled', '{enabled}')"

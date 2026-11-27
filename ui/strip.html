@@ -331,7 +331,8 @@
       <h2 id="bookmark-editor-title">Изменить закладку</h2>
       <label>Название<input type="text" class="filter-input" id="bookmark-title" maxlength="512" required autofocus></label>
       <label>Папки <textarea id="bookmark-path" rows="3" aria-describedby="bookmark-path-help"></textarea></label>
-      <p id="bookmark-path-help" class="muted">Одна папка на строку. Для панели закладок оставьте поле пустым.</p>
+      <p id="bookmark-path-help" class="muted">Одна папка на строку. Пустое поле помещает закладку вне папок.</p>
+      <label class="editor-toggle"><input type="checkbox" class="switch" id="bookmark-on-bar">Показывать на панели закладок</label>
       <label class="editor-toggle" id="bookmark-folder-scope" hidden><input type="checkbox" class="switch" id="bookmark-whole-folder">Переместить папку целиком</label>
       <p id="bookmark-edit-error" role="alert" hidden></p>
       <div class="button-row">

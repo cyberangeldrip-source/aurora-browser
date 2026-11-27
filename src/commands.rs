@@ -315,11 +315,12 @@ pub fn edit_bookmark(
     title: String,
     folder: Vec<String>,
     whole_folder: Option<bool>,
+    on_bar: Option<bool>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     {
         let mut store = state.store_guard();
-        if !store.edit_bookmark(id, title, folder, whole_folder.unwrap_or(false))? {
+        if !store.edit_bookmark(id, title, folder, whole_folder.unwrap_or(false), on_bar)? {
             return Ok(());
         }
         state.save_bookmarks(&store);
@@ -588,8 +589,14 @@ pub async fn import_browser(
     .await
     .map_err(|_| "Не удалось завершить перенос")??;
     browser::sync(&app);
-    if result.bookmarks != 0 {
+    if result.bookmarks_changed {
         browser::refresh_home(&app);
+    }
+    if result.history != 0 {
+        browser::refresh_history(&app);
+    }
+    if result.downloads != 0 {
+        browser::emit(&app, "au://downloads", ());
     }
     Ok(result)
 }
@@ -611,7 +618,7 @@ pub async fn import_bookmark_html(
     .await
     .map_err(|_| "Не удалось прочитать закладки")??;
     browser::sync(&app);
-    if report.bookmarks != 0 {
+    if report.bookmarks_changed {
         browser::refresh_home(&app);
     }
     Ok(report)

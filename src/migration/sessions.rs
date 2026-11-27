@@ -304,14 +304,14 @@ fn group_metadata(bytes: &[u8]) -> Option<([u8; 16], TabGroup)> {
 }
 
 #[cfg(test)]
-mod tests {
-    fn append(bytes: &mut Vec<u8>, command: u8, payload: &[u8]) {
+pub(super) mod tests {
+    pub(crate) fn append(bytes: &mut Vec<u8>, command: u8, payload: &[u8]) {
         bytes.extend_from_slice(&(payload.len() as u16 + 1).to_le_bytes());
         bytes.push(command);
         bytes.extend_from_slice(payload);
     }
 
-    fn navigation(tab: i32, index: i32, url: &str) -> Vec<u8> {
+    pub(crate) fn navigation(tab: i32, index: i32, url: &str) -> Vec<u8> {
         let mut data = Vec::new();
         for field in [tab, index, url.len() as i32] {
             data.extend_from_slice(&field.to_le_bytes());

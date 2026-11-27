@@ -186,6 +186,14 @@ pub struct Bookmark {
     pub title: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folder: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_bar: Option<bool>,
+}
+
+impl Bookmark {
+    pub fn is_on_bar(&self) -> bool {
+        self.on_bar.unwrap_or(true)
+    }
 }
 
 // ---------- Плагины ----------

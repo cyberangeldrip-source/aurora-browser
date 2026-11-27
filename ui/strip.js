@@ -1021,6 +1021,7 @@ async function refreshMigrationSources() {
 
 function summaryText(report) {
   return ['Вкладки — ' + report.tabs, 'История — ' + report.history, 'Закладки — ' + report.bookmarks,
+    'Восстановлено на панели закладок — ' + report.bookmark_bar,
     'Журнал загрузок — ' + report.downloads,
     ...report.notices].join('\n');
 }
@@ -1092,7 +1093,7 @@ function migrationFileSummary(format, result) {
   return format === 'csv'
     ? 'Добавлено паролей — ' + result.imported + '. Уже сохранено — ' + result.duplicates +
       '. Неподдерживаемых или неполных строк — ' + result.skipped + '.'
-    : 'Добавлено закладок — ' + result.bookmarks;
+    : 'Добавлено закладок — ' + result.bookmarks + '. На панели закладок — ' + result.bookmark_bar + '.';
 }
 for (const format of Object.keys(migrationFormats)) {
   const trigger = $('migration-' + format);
@@ -1330,6 +1331,7 @@ function openBookmarkEditor(bookmark) {
   editingBookmark = bookmark;
   $('bookmark-title').value = bookmark.title;
   $('bookmark-path').value = (bookmark.folder ?? []).join('\n');
+  $('bookmark-on-bar').checked = bookmark.on_bar !== false;
   $('bookmark-folder-scope').hidden = !bookmark.folder?.length;
   $('bookmark-whole-folder').checked = false;
   $('bookmark-edit-error').hidden = true;
@@ -1361,7 +1363,7 @@ bookmarkEditor.querySelector('form').addEventListener('submit', async e => {
   try {
     await core.invoke('edit_bookmark', {
       id: editingBookmark.id, title: $('bookmark-title').value, folder,
-      wholeFolder: $('bookmark-whole-folder').checked
+      wholeFolder: $('bookmark-whole-folder').checked, onBar: $('bookmark-on-bar').checked
     });
     await resync();
     bookmarkEditor.close();
@@ -1381,17 +1383,48 @@ function closeBookmarkMenu() {
   bookmarkAnchor = undefined;
   bookmarkMenu.hidden = true;
 }
-function bookmarkButton(item, inFolder = false) {
-  const label = inFolder && item.folder.length > 1 ? item.folder.slice(1).join(' / ') + ' · ' + item.title : item.title;
+function bookmarkButton(item) {
   const node = toText('button', 'bookmark-chip', '');
   node.type = 'button';
   node.title = item.title + ' · ' + item.url;
-  node.append(favicon(item.url, item.title, null, item), toText('span', 'bookmark-label', label));
+  node.append(favicon(item.url, item.title, null, item), toText('span', 'bookmark-label', item.title));
   node.addEventListener('click', () => navigate(item.url));
   node.addEventListener('auxclick', e => {
     if (e.button === 1) run('add_tab', { url: item.url, private: state.private });
   });
   return node;
+}
+function bookmarkFolderRows(items, depth, back) {
+  const nodes = document.createDocumentFragment();
+  const folders = new Map();
+  if (back) {
+    const previous = button('Назад', 'back', 'bookmark-chip', back);
+    previous.append(toText('span', 'bookmark-label', 'Назад'));
+    nodes.append(previous);
+  }
+  for (const item of items) {
+    const name = item.folder?.[depth];
+    if (!name) {
+      nodes.append(bookmarkButton(item));
+      continue;
+    }
+    if (folders.has(name)) {
+      folders.get(name).push(item);
+      continue;
+    }
+    const entries = [item];
+    folders.set(name, entries);
+    const nested = button(name, 'folder', 'bookmark-chip', () => renderBookmarkFolder(entries, depth + 1,
+      () => renderBookmarkFolder(items, depth, back)));
+    nested.append(toText('span', 'bookmark-label', name));
+    nodes.append(nested);
+  }
+  return nodes;
+}
+function renderBookmarkFolder(items, depth, back) {
+  const content = $('bookmark-menu-items');
+  content.replaceChildren(bookmarkFolderRows(items, depth, back));
+  content.firstElementChild?.focus({ preventScroll: true });
 }
 function renderBookmarkStrip() {
   bookmarkTheme = root.dataset.theme;
@@ -1399,12 +1432,13 @@ function renderBookmarkStrip() {
     closeBookmarkMenu();
     setLayer();
   }
-  const children = [];
+  const children = document.createDocumentFragment();
   const folders = new Map();
   for (const item of state.bookmarks) {
+    if (item.on_bar === false) continue;
     const name = item.folder?.[0];
     if (!name) {
-      children.push(bookmarkButton(item));
+      children.append(bookmarkButton(item));
       continue;
     }
     if (folders.has(name)) {
@@ -1419,19 +1453,18 @@ function renderBookmarkStrip() {
       if (reopens) {
         bookmarkAnchor = folder;
         folder.setAttribute('aria-expanded', 'true');
-        $('bookmark-menu-items').replaceChildren(...items.map(entry => bookmarkButton(entry, true)));
         bookmarkMenu.hidden = false;
+        renderBookmarkFolder(items, 1);
         alignPopup(bookmarkMenu, folder.getBoundingClientRect().left);
-        $('bookmark-menu-items').firstElementChild?.focus({ preventScroll: true });
       }
       setLayer();
     });
     folder.setAttribute('aria-expanded', 'false');
     folder.setAttribute('aria-controls', 'bookmark-menu');
     folder.append(toText('span', 'bookmark-label', name));
-    children.push(folder);
+    children.append(folder);
   }
-  $('bookmark-strip').replaceChildren(...children);
+  $('bookmark-strip').replaceChildren(children);
 }
 $('bookmark-library').addEventListener('click', () => openPanel('bookmarks'));
 $('bookmark-strip').addEventListener('scroll', () => {

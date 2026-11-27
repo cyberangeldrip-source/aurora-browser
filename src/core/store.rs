@@ -137,6 +137,7 @@ fn default_bookmarks() -> Vec<Bookmark> {
         url: url.into(),
         title: title.into(),
         folder: Vec::new(),
+        on_bar: Some(true),
     })
     .collect()
 }
@@ -368,14 +369,13 @@ impl Store {
     }
 
     pub fn replace_bookmarks(&mut self, mut bookmarks: Vec<Bookmark>) {
-        let mut urls = std::collections::HashSet::new();
         let mut ids = std::collections::HashSet::new();
         bookmarks.retain_mut(|bookmark| {
             let Some(url) = urls::bookmark_url(&bookmark.url) else {
                 return false;
             };
             bookmark.url = url;
-            bookmark.id != u64::MAX && urls.insert(bookmark.url.clone())
+            bookmark.id != u64::MAX
         });
         let mut next_id = bookmarks
             .iter()
@@ -402,6 +402,16 @@ impl Store {
     }
 
     pub fn add_bookmark_in(&mut self, url: String, title: &str, folder: Vec<String>) {
+        self.insert_bookmark(Bookmark {
+            id: 0,
+            url,
+            title: title.into(),
+            folder,
+            on_bar: Some(true),
+        });
+    }
+
+    pub fn insert_bookmark(&mut self, mut bookmark: Bookmark) -> u64 {
         while self.next_bookmark_id == u64::MAX
             || self
                 .bookmarks
@@ -410,18 +420,16 @@ impl Store {
         {
             self.next_bookmark_id = self.next_bookmark_id.wrapping_add(1).max(1);
         }
-        let title = if title.trim().is_empty() {
-            urls::title_for_url(&url)
+        bookmark.title = if bookmark.title.trim().is_empty() {
+            urls::title_for_url(&bookmark.url)
         } else {
-            title.trim().to_owned()
+            bookmark.title.trim().to_owned()
         };
-        self.bookmarks.push(Bookmark {
-            id: self.next_bookmark_id,
-            url,
-            title,
-            folder,
-        });
+        let id = self.next_bookmark_id;
+        bookmark.id = id;
+        self.bookmarks.push(bookmark);
         self.next_bookmark_id = self.next_bookmark_id.wrapping_add(1).max(1);
+        id
     }
 
     pub fn remove_bookmark(&mut self, id: u64) -> bool {
@@ -436,6 +444,7 @@ impl Store {
         title: String,
         folder: Vec<String>,
         whole_folder: bool,
+        on_bar: Option<bool>,
     ) -> Result<bool, String> {
         let index = self
             .bookmarks
@@ -443,6 +452,8 @@ impl Store {
             .position(|bookmark| bookmark.id == id)
             .ok_or("Закладка больше недоступна")?;
         let bookmark = &self.bookmarks[index];
+        let previous_bar = bookmark.is_on_bar();
+        let on_bar = on_bar.unwrap_or(previous_bar);
         let title = title.trim();
         if title.is_empty() || (title != bookmark.title && title.chars().count() > 512) {
             return Err("Введите название закладки до 512 символов".into());
@@ -457,26 +468,33 @@ impl Store {
         {
             return Err("Укажите до 32 папок с названиями до 256 символов".into());
         }
-        if bookmark.title == title && bookmark.folder == folder {
+        if bookmark.title == title && bookmark.folder == folder && previous_bar == on_bar {
             return Ok(false);
         }
-        if whole_folder && bookmark.folder != folder {
+        if whole_folder && (bookmark.folder != folder || previous_bar != on_bar) {
             let from = bookmark.folder.clone();
-            if from.is_empty() || folder.is_empty() || folder.starts_with(&from) {
+            if from.is_empty()
+                || folder.is_empty()
+                || (folder != from && on_bar == previous_bar && folder.starts_with(&from))
+            {
                 return Err("Выберите путь папки за пределами исходной папки".into());
             }
             if self.bookmarks.iter().any(|item| {
-                item.folder.starts_with(&from) && item.folder.len() - from.len() + folder.len() > 32
+                item.is_on_bar() == previous_bar
+                    && item.folder.starts_with(&from)
+                    && item.folder.len() - from.len() + folder.len() > 32
             }) {
                 return Err("Новый путь вложенной папки превышает 32 уровня".into());
             }
             for item in &mut self.bookmarks {
-                if item.folder.starts_with(&from) {
+                if item.is_on_bar() == previous_bar && item.folder.starts_with(&from) {
                     item.folder.splice(..from.len(), folder.iter().cloned());
+                    item.on_bar = Some(on_bar);
                 }
             }
         } else {
             self.bookmarks[index].folder = folder;
+            self.bookmarks[index].on_bar = Some(on_bar);
         }
         self.bookmarks[index].title = title.to_owned();
         Ok(true)
@@ -807,10 +825,10 @@ mod tests {
         let id = store.bookmarks[0].id;
         let folder = vec!["Работа".to_owned(), "Проект / Код".to_owned()];
         assert!(store
-            .edit_bookmark(id, "  New name  ".to_owned(), folder.clone(), false)
+            .edit_bookmark(id, "  New name  ".to_owned(), folder.clone(), false, None)
             .unwrap());
         assert!(store
-            .edit_bookmark(id, "Bad edit".to_owned(), vec!["".to_owned()], false)
+            .edit_bookmark(id, "Bad edit".to_owned(), vec!["".to_owned()], false, None)
             .is_err());
         let bookmark = &store.bookmarks[0];
         assert_eq!(bookmark.id, id);
@@ -834,10 +852,22 @@ mod tests {
         );
         let (a, b) = (store.bookmarks[0].id, store.bookmarks[1].id);
         assert!(store
-            .edit_bookmark(a, "A".into(), vec!["Work".into(), "Nested".into()], true)
+            .edit_bookmark(
+                a,
+                "A".into(),
+                vec!["Work".into(), "Nested".into()],
+                true,
+                None
+            )
             .is_err());
         assert!(store
-            .edit_bookmark(a, "A".into(), vec!["Archive".into(), "Work".into()], true)
+            .edit_bookmark(
+                a,
+                "A".into(),
+                vec!["Archive".into(), "Work".into()],
+                true,
+                None
+            )
             .unwrap());
         assert!(store.move_bookmark(b, Some(a)));
         assert_eq!(store.bookmarks[0].folder, ["Archive", "Work", "Research"]);

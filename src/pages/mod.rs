@@ -205,7 +205,13 @@ pub fn handle(app: &AppHandle, webview: &str, request: Request<Vec<u8>>) -> Resp
                 (
                     store.settings.clone(),
                     if matches!(path, "" | "home") {
-                        store.bookmarks.iter().take(12).cloned().collect()
+                        store
+                            .bookmarks
+                            .iter()
+                            .filter(|item| item.is_on_bar())
+                            .take(12)
+                            .cloned()
+                            .collect()
                     } else {
                         Vec::new()
                     },

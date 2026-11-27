@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -8,14 +8,20 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::{model::HistoryEntry, store::AppState, urls};
+use crate::core::{
+    model::{Bookmark, HistoryEntry},
+    store::AppState,
+    urls,
+};
+
+mod bookmarks;
+pub use bookmarks::html as html_bookmarks;
 
 #[cfg(windows)]
 pub mod passwords;
 mod sessions;
 
 pub type Links = Vec<(String, String, Option<crate::core::model::TabGroup>)>;
-pub type BookmarkLinks = Vec<(String, String, Vec<String>)>;
 pub const HISTORY_LIMIT: usize = 50_000;
 const FILE_LIMIT: u64 = 64 * 1024 * 1024;
 
@@ -54,7 +60,7 @@ pub struct Selection {
 
 #[derive(Default)]
 pub struct BrowserData {
-    pub bookmarks: BookmarkLinks,
+    pub bookmarks: Vec<Bookmark>,
     pub history: Vec<HistoryEntry>,
     pub tabs: Links,
     pub downloads: Vec<crate::downloads::Download>,
@@ -66,6 +72,9 @@ pub struct BrowserData {
 #[derive(Default, Serialize)]
 pub struct Summary {
     pub bookmarks: usize,
+    pub bookmark_bar: usize,
+    #[serde(skip)]
+    pub bookmarks_changed: bool,
     pub history: usize,
     pub tabs: usize,
     pub downloads: usize,
@@ -198,7 +207,7 @@ fn add_sources(
         let bookmarks = if engine == Engine::Firefox {
             database
         } else {
-            path.join("Bookmarks").is_file()
+            bookmarks::has_chromium_files(&path)
         };
         let tabs = !sessions::files(&path, engine).is_empty();
         if !(database || bookmarks || tabs) {
@@ -219,7 +228,7 @@ fn add_sources(
             bookmarks,
             history: database,
             tabs,
-            downloads: database && engine == Engine::Chromium,
+            downloads: database,
             path,
             engine,
         });
@@ -231,20 +240,36 @@ pub fn read_browser(id: &str, fields: Selection) -> Result<BrowserData, String> 
         .into_iter()
         .find(|source| source.id == id || (id == "brave" && source.id.starts_with("brave:")))
         .ok_or("Профиль браузера не найден")?;
+    Ok(read_source(&source, fields))
+}
+
+fn read_source(source: &Source, fields: Selection) -> BrowserData {
     let mut data = BrowserData {
         keep_history: fields.keep_history,
         ..BrowserData::default()
     };
     if fields.bookmarks {
-        match bookmarks(&source) {
-            Ok(items) => data.bookmarks = items,
+        let result = match source.engine {
+            Engine::Chromium => bookmarks::chromium(&source.path),
+            Engine::Firefox => database(source)
+                .and_then(|db| bookmarks::firefox(&db))
+                .map(|items| (items, false))
+                .map_err(|_| ()),
+        };
+        match result {
+            Ok((items, partial)) => {
+                data.bookmarks = items;
+                if partial {
+                    data.notices.push("Часть файлов закладок недоступна. Повторите перенос или выберите экспорт HTML.");
+                }
+            }
             Err(()) => data
                 .notices
                 .push("Закладки недоступны в выбранном профиле."),
         }
     }
     if fields.history {
-        match history(&source) {
+        match history(source) {
             Ok(items) => data.history = items,
             Err(()) => data
                 .notices
@@ -266,14 +291,14 @@ pub fn read_browser(id: &str, fields: Selection) -> Result<BrowserData, String> 
         }
     }
     if fields.downloads {
-        match download_history(&source) {
+        match download_history(source) {
             Ok(items) => data.downloads = items,
             Err(()) => data
                 .notices
                 .push("Журнал загрузок недоступен в выбранном профиле."),
         }
     }
-    Ok(data)
+    data
 }
 
 fn read_limit(path: &Path) -> io::Result<Vec<u8>> {
@@ -299,75 +324,6 @@ fn database(source: &Source) -> rusqlite::Result<Connection> {
     let db = Connection::open_with_flags(source.path.join(file), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_millis(1500))?;
     Ok(db)
-}
-
-fn bookmarks(source: &Source) -> Result<BookmarkLinks, ()> {
-    if source.engine == Engine::Firefox {
-        let db = database(source).map_err(|_| ())?;
-        let mut folders_query = db
-            .prepare("SELECT id,parent,COALESCE(title,'') FROM moz_bookmarks WHERE type=2")
-            .map_err(|_| ())?;
-        let folders: std::collections::HashMap<i64, (i64, String)> = folders_query
-            .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
-            .map_err(|_| ())?
-            .filter_map(Result::ok)
-            .collect();
-        let mut query = db.prepare("SELECT p.url, COALESCE(b.title,p.title,''), b.parent FROM moz_bookmarks b JOIN moz_places p ON b.fk=p.id WHERE b.type=1 ORDER BY b.position,b.id").map_err(|_| ())?;
-        let rows = query
-            .query_map([], |row| {
-                let mut folder = Vec::new();
-                let mut parent: i64 = row.get(2)?;
-                for _ in 0..16 {
-                    let Some((next, name)) = folders.get(&parent) else {
-                        break;
-                    };
-                    if !name.trim().is_empty() {
-                        folder.push(name.chars().take(90).collect());
-                    }
-                    parent = *next;
-                }
-                folder.reverse();
-                Ok((row.get(0)?, row.get(1)?, folder))
-            })
-            .map_err(|_| ())?;
-        return Ok(rows.filter_map(Result::ok).collect());
-    }
-    let bytes = read_limit(&source.path.join("Bookmarks")).map_err(|_| ())?;
-    let data: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
-    let roots = data["roots"].as_object().ok_or(())?;
-    let mut queue: Vec<_> = roots
-        .iter()
-        .rev()
-        .map(|(key, node)| (node, Vec::<String>::new(), key == "bookmark_bar"))
-        .collect();
-    let mut links = Vec::new();
-    while let Some((node, folder, skip_name)) = queue.pop() {
-        if let Some(url) = node["url"].as_str() {
-            links.push((
-                url.to_owned(),
-                node["name"].as_str().unwrap_or_default().to_owned(),
-                folder.clone(),
-            ));
-        }
-        if let Some(children) = node["children"].as_array() {
-            let mut folder = folder;
-            if let Some(name) = node["name"]
-                .as_str()
-                .filter(|name| !skip_name && !name.trim().is_empty())
-            {
-                if folder.len() < 16 {
-                    folder.push(name.chars().take(90).collect());
-                }
-            }
-            queue.extend(
-                children
-                    .iter()
-                    .rev()
-                    .map(|child| (child, folder.clone(), false)),
-            );
-        }
-    }
-    Ok(links)
 }
 
 fn history(source: &Source) -> Result<Vec<HistoryEntry>, ()> {
@@ -400,21 +356,44 @@ fn history(source: &Source) -> Result<Vec<HistoryEntry>, ()> {
 }
 
 fn download_history(source: &Source) -> Result<Vec<crate::downloads::Download>, ()> {
-    use crate::downloads::{Download, Status};
-    if source.engine != Engine::Chromium {
-        return Err(());
-    }
+    use crate::downloads::Status;
     let db = database(source).map_err(|_| ())?;
+    if source.engine == Engine::Firefox {
+        let mut query = db.prepare(
+            "SELECT CAST(d.content AS TEXT), CAST(m.content AS TEXT) FROM moz_annos d
+             JOIN moz_anno_attributes a ON a.id=d.anno_attribute_id AND a.name='downloads/destinationFileURI'
+             LEFT JOIN moz_annos m ON m.place_id=d.place_id AND m.anno_attribute_id=
+                 (SELECT id FROM moz_anno_attributes WHERE name='downloads/metaData')
+             ORDER BY d.lastModified DESC, d.id DESC LIMIT 150"
+        ).map_err(|_| ())?;
+        let rows = query
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|_| ())?;
+        return Ok(rows
+            .filter_map(Result::ok)
+            .filter_map(|(uri, metadata)| {
+                let path = url::Url::parse(&uri).ok()?.to_file_path().ok()?;
+                let meta = metadata
+                    .and_then(|data| serde_json::from_str::<Value>(&data).ok())
+                    .unwrap_or_default();
+                let status = match meta["state"].as_i64() {
+                    Some(1) => Status::Complete,
+                    Some(3) => Status::Canceled,
+                    _ => Status::Interrupted,
+                };
+                let total = meta["fileSize"].as_u64();
+                imported_download(path, status, total.unwrap_or(0), total)
+            })
+            .collect());
+    }
     let mut query = db.prepare(
         "SELECT target_path, received_bytes, total_bytes, state FROM downloads WHERE state IN (1,2,3) ORDER BY start_time DESC LIMIT 150"
     ).map_err(|_| ())?;
     let rows = query
         .query_map([], |row| {
             let path = PathBuf::from(row.get::<_, String>(0)?);
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
             let received: i64 = row.get(1)?;
             let total: i64 = row.get(2)?;
             let status = match row.get::<_, i64>(3)? {
@@ -422,64 +401,36 @@ fn download_history(source: &Source) -> Result<Vec<crate::downloads::Download>, 
                 2 => Status::Canceled,
                 _ => Status::Interrupted,
             };
-            Ok(Download {
-                id: 0,
-                name,
+            Ok(imported_download(
                 path,
                 status,
-                received: received.max(0) as u64,
-                total: u64::try_from(total).ok(),
-                can_resume: false,
-                private: false,
-            })
-        })
-        .map_err(|_| ())?;
-    Ok(rows
-        .filter_map(Result::ok)
-        .filter(|item| item.path.is_absolute() && !item.name.is_empty())
-        .collect())
-}
-
-pub fn html_bookmarks(document: &str) -> Result<BookmarkLinks, String> {
-    if document.len() as u64 > FILE_LIMIT {
-        return Err("Файл закладок слишком большой".into());
-    }
-    let document = scraper::Html::parse_document(document);
-    let selector = scraper::Selector::parse("a[href]").expect("selector is valid");
-    let heading = scraper::Selector::parse(":scope > h3").expect("selector is valid");
-    let links: BookmarkLinks = document
-        .select(&selector)
-        .filter_map(|tag| {
-            let url = urls::bookmark_url(tag.value().attr("href")?)?;
-            let mut folders: Vec<String> = tag
-                .ancestors()
-                .filter_map(scraper::ElementRef::wrap)
-                .filter(|ancestor| ancestor.value().name() == "dt")
-                .filter_map(|ancestor| ancestor.select(&heading).next())
-                .map(|folder| {
-                    folder
-                        .text()
-                        .collect::<String>()
-                        .trim()
-                        .chars()
-                        .take(90)
-                        .collect()
-                })
-                .filter(|name: &String| !name.is_empty())
-                .take(16)
-                .collect();
-            folders.reverse();
-            Some((
-                url,
-                tag.text().collect::<String>().trim().to_owned(),
-                folders,
+                received.max(0) as u64,
+                u64::try_from(total).ok(),
             ))
         })
-        .collect();
-    if links.is_empty() {
-        return Err("В файле нет поддерживаемых закладок".into());
+        .map_err(|_| ())?;
+    Ok(rows.filter_map(Result::ok).flatten().collect())
+}
+
+fn imported_download(
+    path: PathBuf,
+    status: crate::downloads::Status,
+    received: u64,
+    total: Option<u64>,
+) -> Option<crate::downloads::Download> {
+    if !path.is_absolute() {
+        return None;
     }
-    Ok(links)
+    Some(crate::downloads::Download {
+        id: 0,
+        name: path.file_name()?.to_string_lossy().into_owned(),
+        path,
+        status,
+        received,
+        total,
+        can_resume: false,
+        private: false,
+    })
 }
 
 pub fn apply(state: &AppState, data: BrowserData) -> Summary {
@@ -488,36 +439,13 @@ pub fn apply(state: &AppState, data: BrowserData) -> Summary {
         notices: data.notices,
         ..Summary::default()
     };
-    let mut known: HashSet<_> = store
-        .bookmarks
-        .iter()
-        .map(|item| item.url.clone())
-        .collect();
-    let mut restored_folders = 0;
-    for (url, title, folder) in data.bookmarks {
-        if let Some(url) = urls::bookmark_url(&url) {
-            if known.insert(url.clone()) {
-                store.add_bookmark_in(url, &title, folder);
-                summary.bookmarks += 1;
-            } else if !folder.is_empty() {
-                if let Some(bookmark) = store
-                    .bookmarks
-                    .iter_mut()
-                    .find(|item| item.url == url && item.folder.is_empty())
-                {
-                    bookmark.folder = folder;
-                    restored_folders += 1;
-                }
-            }
-        }
-    }
-    if summary.bookmarks != 0 || restored_folders != 0 {
+    (
+        summary.bookmarks,
+        summary.bookmark_bar,
+        summary.bookmarks_changed,
+    ) = bookmarks::merge(&mut store, data.bookmarks);
+    if summary.bookmarks_changed {
         state.save_bookmarks(&store);
-    }
-    if restored_folders != 0 {
-        summary
-            .notices
-            .push("Обновлены папки ранее импортированных закладок.");
     }
     if data.keep_history
         && store.settings.history_retention_days != 0
@@ -538,39 +466,30 @@ pub fn apply(state: &AppState, data: BrowserData) -> Summary {
         state.save_history(&store);
     }
 
-    let mut known: HashSet<_> = store
-        .tabs
-        .tabs
-        .iter()
-        .filter(|tab| !tab.private)
-        .map(|tab| tab.url.clone())
-        .collect();
-    let mut updated_groups = false;
+    let mut remaining = HashMap::new();
+    for tab in store.tabs.tabs.iter().filter(|tab| !tab.private) {
+        *remaining
+            .entry((
+                tab.url.clone(),
+                tab.group.as_ref().map(|group| group.id.clone()),
+            ))
+            .or_insert(0_usize) += 1;
+    }
     for (url, title, group) in data.tabs {
         if let Some(url) = urls::bookmark_url(&url) {
-            if known.insert(url.clone()) {
+            let count = remaining
+                .entry((url.clone(), group.as_ref().map(|group| group.id.clone())))
+                .or_default();
+            if *count == 0 {
                 store.add_imported_tab(url, &title, group);
                 summary.tabs += 1;
-            } else if let Some(group) = group {
-                if let Some(tab) = store
-                    .tabs
-                    .tabs
-                    .iter_mut()
-                    .find(|tab| !tab.private && tab.url == url && tab.group.is_none())
-                {
-                    tab.group = Some(group);
-                    updated_groups = true;
-                }
+            } else {
+                *count -= 1;
             }
         }
     }
-    if summary.tabs != 0 || updated_groups {
+    if summary.tabs != 0 {
         state.save_tabs(&store);
-    }
-    if updated_groups {
-        summary
-            .notices
-            .push("Восстановлены группы ранее импортированных вкладок.");
     }
     drop(store);
     summary.downloads = state.downloads_guard().merge_imported(data.downloads);
@@ -623,13 +542,35 @@ pub fn profile_path() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::core::store::now_secs;
+    use crate::downloads::Status;
+    use rusqlite::params;
+
+    fn test_directory() -> PathBuf {
+        let mut id = [0; 8];
+        getrandom::fill(&mut id).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("aurora-import-{:016x}", u64::from_le_bytes(id)));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    const ALL: Selection = Selection {
+        bookmarks: true,
+        history: true,
+        tabs: true,
+        downloads: true,
+        keep_history: true,
+    };
+
     #[test]
     fn exported_html_decodes_labels_and_rejects_non_web_targets() {
         let links = super::html_bookmarks(r#"<DL><DT><A HREF="https://example.org/">A &amp; B</A><DT><A HREF="javascript:alert(1)">Skip</A></DL>"#).unwrap();
-        assert_eq!(
-            links,
-            [("https://example.org/".into(), "A & B".into(), Vec::new())]
-        );
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://example.org/");
+        assert_eq!(links[0].title, "A & B");
+        assert!(links[0].is_on_bar());
     }
 
     #[test]
@@ -645,7 +586,178 @@ mod tests {
             </DL><p>"#,
         )
         .unwrap();
-        assert_eq!(links[0].2, ["Work & study", "Rust"]);
-        assert!(links[1].2.is_empty());
+        assert_eq!(links[0].folder, ["Work & study", "Rust"]);
+        assert!(links[1].folder.is_empty());
+    }
+
+    #[test]
+    fn exported_html_restores_the_toolbar_separately() {
+        let links = super::html_bookmarks(r#"<DL><p>
+        <DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Bookmarks bar</H3>
+        <DL><p><DT><H3>Work</H3><DL><p><DT><A HREF="https://example.org/work">Work link</A></DL><p></DL><p>
+        <DT><A HREF="https://example.org/other">Other</A></DL>"#).unwrap();
+        assert!(links[0].is_on_bar());
+        assert_eq!(links[0].folder, ["Work"]);
+        assert!(!links[1].is_on_bar());
+    }
+
+    #[test]
+    fn chromium_import_preserves_toolbar_order_and_reopens_without_duplicates() {
+        let root = test_directory();
+        let source_path = root.join("Default");
+        fs::create_dir_all(source_path.join("Sessions")).unwrap();
+        fs::write(source_path.join("Bookmarks"), r#"{"roots":{
+            "other":{"name":"Other bookmarks","children":[{"name":"Reference","url":"https://example.org/b"}]},
+            "bookmark_bar":{"name":"Brave bookmarks","children":[
+                {"name":"First","url":"https://example.org/a"},
+                {"name":"Research","children":[{"name":"Nested","children":[{"name":"Folder link","url":"https://example.org/b"}]}]},
+                {"name":"Third","url":"https://example.org/c"}]}}}"#).unwrap();
+        fs::write(source_path.join("AccountBookmarks"), r#"{"roots":{"bookmark_bar":{"children":[{"name":"Account","url":"https://example.org/account"}]}}}"#).unwrap();
+        let mut session = b"SNSS\x03\0\0\0".to_vec();
+        for tab in [1, 2] {
+            sessions::tests::append(
+                &mut session,
+                6,
+                &sessions::tests::navigation(tab, 0, "https://example.net/tab"),
+            );
+        }
+        fs::write(source_path.join("Sessions/Session_100"), session).unwrap();
+        let db = Connection::open(source_path.join("History")).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL;
+            CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, title TEXT);
+            CREATE TABLE visits (url INTEGER, visit_time INTEGER);
+            CREATE TABLE downloads (target_path TEXT, received_bytes INTEGER, total_bytes INTEGER, state INTEGER, start_time INTEGER);
+            INSERT INTO urls VALUES (1,'https://example.org/visit','Example visit');").unwrap();
+        let visit = (now_secs() as i64 - 45 * 86_400) * 1_000_000 + 11_644_473_600_000_000;
+        db.execute("INSERT INTO visits VALUES (1,?1)", [visit])
+            .unwrap();
+        let download = root.join("Архив.zip");
+        db.execute(
+            "INSERT INTO downloads VALUES (?1,42,42,1,?2)",
+            params![download.to_str().unwrap(), visit],
+        )
+        .unwrap();
+        let mut sources = Vec::new();
+        add_sources(&mut sources, "brave", "Brave", &root, Engine::Chromium);
+        let source = &sources[0];
+        assert!(source.tabs && source.history && source.bookmarks && source.downloads);
+        let destination = root.join("Aurora");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("bookmarks.json"), r#"[{"id":3,"url":"https://example.org/b","title":"Reference","folder":["Other bookmarks"]},{"id":4,"url":"https://example.org/c","title":"Third"}]"#).unwrap();
+        let state = AppState::init(destination.clone()).unwrap();
+        let report = apply(&state, read_source(source, ALL));
+        assert_eq!(
+            (
+                report.bookmarks,
+                report.bookmark_bar,
+                report.tabs,
+                report.history,
+                report.downloads
+            ),
+            (3, 4, 2, 1, 1)
+        );
+        let repeat = apply(&state, read_source(source, ALL));
+        assert_eq!(
+            (
+                repeat.bookmarks,
+                repeat.tabs,
+                repeat.history,
+                repeat.downloads
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(!repeat.bookmarks_changed);
+        assert_eq!(
+            state.downloads_guard().persisted()[0].status,
+            Status::Complete
+        );
+        state.flush_saves();
+        drop(state);
+        drop(db);
+        let reopened = AppState::init(destination).unwrap();
+        let store = reopened.store_guard();
+        let bar: Vec<_> = store
+            .bookmarks
+            .iter()
+            .filter(|item| item.is_on_bar())
+            .map(|item| item.title.as_str())
+            .collect();
+        assert_eq!(bar, ["First", "Folder link", "Third", "Account"]);
+        assert_eq!(store.bookmarks[1].folder, ["Research", "Nested"]);
+        assert_eq!(store.bookmarks.last().unwrap().on_bar, Some(false));
+        assert_eq!(store.bookmarks[2].id, 4);
+        assert_eq!(
+            store.history[0].ts,
+            (visit / 1_000_000 - 11_644_473_600) as u64
+        );
+        assert_eq!(store.settings.history_retention_days, 0);
+        assert_eq!(
+            store
+                .tabs
+                .tabs
+                .iter()
+                .filter(|tab| tab.url == "https://example.net/tab")
+                .count(),
+            2
+        );
+        assert_eq!(reopened.downloads_guard().persisted()[0].path, download);
+    }
+
+    #[test]
+    fn firefox_import_reads_toolbar_order_session_visits_and_downloads() {
+        let root = test_directory();
+        let db = Connection::open(root.join("places.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE moz_places(id INTEGER PRIMARY KEY,url TEXT,title TEXT);
+            CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY,parent INTEGER,guid TEXT,type INTEGER,position INTEGER,title TEXT,fk INTEGER);
+            CREATE TABLE moz_historyvisits(place_id INTEGER,visit_date INTEGER);
+            CREATE TABLE moz_anno_attributes(id INTEGER PRIMARY KEY,name TEXT);
+            CREATE TABLE moz_annos(id INTEGER PRIMARY KEY, place_id INTEGER, anno_attribute_id INTEGER, content TEXT, lastModified INTEGER);
+            INSERT INTO moz_places VALUES (1,'https://example.org/first','One'),(2,'https://example.org/second','Two');
+            INSERT INTO moz_bookmarks VALUES (1,0,'toolbar_____',2,0,'Localized toolbar',NULL),
+                (2,0,'unfiled_____',2,1,'Other',NULL),(3,1,'localFolder_',2,0,'Folder',NULL),
+                (4,3,'first_______',1,0,'First',1),(5,1,'second______',1,1,'Second',2),
+                (6,2,'reference___',1,0,'Reference',1);
+            INSERT INTO moz_anno_attributes VALUES (1,'downloads/destinationFileURI'),(2,'downloads/metaData');").unwrap();
+        let current = now_secs();
+        db.execute(
+            "INSERT INTO moz_historyvisits VALUES (1,?1)",
+            [current * 1_000_000],
+        )
+        .unwrap();
+        let path = root.join("Firefox package.zip");
+        let file_uri = url::Url::from_file_path(&path).unwrap().to_string();
+        db.execute(
+            "INSERT INTO moz_annos VALUES (1,1,1,?1,?2),(2,1,2,?3,?2)",
+            params![file_uri, current, r#"{"state":1,"fileSize":64}"#],
+        )
+        .unwrap();
+        let mut session = b"mozLz40\0".to_vec();
+        session.extend(lz4_flex::compress_prepend_size(br#"{"windows":[
+            {"tabs":[{"index":1,"entries":[{"url":"https://example.net/public","title":"Public"},{"url":"https://example.net/forward"}]}]},
+            {"isPrivate":true,"tabs":[{"index":1,"entries":[{"url":"https://example.net/private"}]}]}]}"#));
+        fs::write(root.join("sessionstore.jsonlz4"), session).unwrap();
+        let mut sources = Vec::new();
+        add_sources(&mut sources, "firefox", "Firefox", &root, Engine::Firefox);
+        let data = read_source(&sources[0], ALL);
+        assert!(data.notices.is_empty());
+        assert_eq!(
+            data.bookmarks
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            ["First", "Second", "Reference"]
+        );
+        assert_eq!(data.bookmarks[0].folder, ["Folder"]);
+        assert!(data.bookmarks[0].is_on_bar());
+        assert!(!data.bookmarks[2].is_on_bar());
+        assert_eq!(
+            data.tabs,
+            [("https://example.net/public".into(), "Public".into(), None)]
+        );
+        assert_eq!(data.history[0].ts, current);
+        assert_eq!(data.downloads[0].path, path);
+        assert_eq!(data.downloads[0].total, Some(64));
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
     }
 }
