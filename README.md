@@ -4,7 +4,8 @@ Aurora — настольный браузер для Windows на Rust, Tauri 2
 
 ## Запуск на Windows
 
-- `target/release/bundle/nsis/Aurora_1.9.0_x64-setup.exe` устанавливает браузер для текущего пользователя. При необходимости установщик загружает WebView2 Runtime.
+- `target/release/bundle/nsis/Aurora_1.10.0_x64-setup.exe` устанавливает браузер для текущего пользователя. При необходимости установщик загружает WebView2 Runtime.
+- При первом запуске нового профиля Aurora предлагает выбрать тему, поиск, панель закладок и анимацию фона. Данные из другого браузера можно перенести сразу или позже через меню.
 - Начиная с 1.9.0 Aurora автоматически проверяет стабильные релизы GitHub. При появлении новой версии нажмите **Доступно обновление → Обновить и перезапустить**. Браузер проверит подпись, заменит свой EXE и откроется снова. Ручная проверка доступна в меню «Обновления Aurora».
 - `START-HERE.bat` запускает готовую сборку из папки проекта или собирает её из исходников.
 - Сборка проверялась на Windows 11 x64. Установщик не подписан.
@@ -44,7 +45,7 @@ Aurora — настольный браузер для Windows на Rust, Tauri 2
 Соберите Windows x64. Подготовьте краткие заметки в UTF-8 и выполните скрипт из корня проекта. Ключ подписи хранится в `%LOCALAPPDATA%\AuroraReleaseKeys` отдельно от репозитория. Пароль ключа защищён DPAPI текущей учётной записи Windows.
 
 ```powershell
-pwsh -File windows/New-UpdateAssets.ps1 -Version 1.9.0 -Binary target/release/aurora-browser.exe -Notes notes.md -OutputDirectory target/release
+pwsh -File windows/New-UpdateAssets.ps1 -Version 1.10.0 -Binary target/release/aurora-browser.exe -Notes notes.md -OutputDirectory target/release
 ```
 
 Загрузите `aurora-browser.exe`, `aurora-update.json` и `aurora-update.json.sig` в один стабильный выпуск с тегом соответствующей версии. Публикуйте выпуск после загрузки всех файлов. Доступные клиенту версии и описание подписываются вместе с размером и SHA-256 EXE. Без исходного закрытого ключа уже выпущенные клиенты не смогут принять новые подписи.

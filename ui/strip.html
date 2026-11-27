@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aurora</title>
   <link rel="stylesheet" href="chrome.css">
+  <link rel="stylesheet" href="welcome.css">
   <link rel="stylesheet" href="tooltip.css">
   <script src="liquid.js" defer></script>
   <script src="update.js" defer></script>
+  <script src="welcome.js" defer></script>
   <script src="strip.js" defer></script>
   <script src="manage.js" defer></script>
   <script src="tooltip.js" defer></script>
@@ -349,6 +351,78 @@
       </div>
     </form>
   </dialog>
+  <main id="welcome" aria-label="Первый запуск Aurora" hidden>
+    <div class="welcome-wallpaper" aria-hidden="true"></div>
+    <header class="welcome-titlebar">
+      <span class="welcome-brand"><img src="aurora-mark.svg" alt="" width="23" height="23"> Aurora</span>
+      <div class="window-controls" aria-label="Управление окном">
+        <button type="button" class="icon-button" data-window="minimize" data-icon="minus" title="Свернуть"></button>
+        <button type="button" class="icon-button" data-window="maximize" data-icon="square" title="Развернуть"></button>
+        <button type="button" class="icon-button window-close" data-window="close" data-icon="close" title="Закрыть"></button>
+      </div>
+    </header>
+    <div class="welcome-scroll">
+      <article class="welcome-shell glass">
+        <aside class="welcome-art">
+          <div class="welcome-lens" aria-hidden="true">
+            <img src="aurora-mark.svg" alt="" width="112" height="112">
+          </div>
+          <ol class="welcome-steps" aria-label="Этапы настройки">
+            <li aria-current="step">Знакомство</li>
+            <li>Настройка</li>
+            <li>Перенос данных</li>
+          </ol>
+        </aside>
+        <div class="welcome-card">
+          <section class="welcome-step" aria-labelledby="welcome-title">
+            <h1 id="welcome-title" tabindex="-1">Добро пожаловать<br>в Aurora</h1>
+            <p>Выберите оформление и поиск, а затем перенесите то, что нужно из вашего браузера.</p>
+          </section>
+          <section class="welcome-step" aria-labelledby="welcome-appearance" hidden>
+            <h1 id="welcome-appearance" tabindex="-1">Настройте Aurora</h1>
+            <fieldset class="welcome-themes">
+              <legend>Цветовая тема</legend>
+              <label><input type="radio" name="welcome-theme" value="dark"><span class="welcome-theme-icon dark" aria-hidden="true"></span>Тёмная</label>
+              <label><input type="radio" name="welcome-theme" value="light"><span class="welcome-theme-icon light" aria-hidden="true"></span>Светлая</label>
+            </fieldset>
+            <label class="welcome-preference" for="welcome-engine">Поиск
+              <select id="welcome-engine">
+                <option value="google">Google</option>
+                <option value="yandex">Яндекс</option>
+                <option value="duckduckgo">DuckDuckGo</option>
+                <option value="bing">Bing</option>
+              </select>
+            </label>
+            <label class="welcome-preference" for="welcome-bookmark-bar">Панель закладок<input type="checkbox" class="switch" id="welcome-bookmark-bar"></label>
+            <label class="welcome-preference" for="welcome-wallpaper-motion">Живой фон новой вкладки<input type="checkbox" class="switch" id="welcome-wallpaper-motion"></label>
+          </section>
+          <section class="welcome-step" aria-labelledby="welcome-transfer" hidden>
+            <h1 id="welcome-transfer" tabindex="-1">Перенос данных</h1>
+            <p>Выберите профиль и данные, которые хотите взять с собой.</p>
+            <label class="welcome-preference" for="welcome-source">Профиль браузера
+              <select id="welcome-source" disabled><option>Поиск браузеров…</option></select>
+            </label>
+            <div id="welcome-fields" class="welcome-fields"></div>
+            <label class="welcome-retention" id="welcome-retention-row" hidden><input type="checkbox" id="welcome-retention"> Сохранить посещения старше срока хранения Aurora</label>
+            <div class="welcome-actions welcome-file-actions">
+              <button type="button" class="pill" id="welcome-import" data-icon="import" disabled>Перенести выбранное</button>
+              <button type="button" class="pill" id="welcome-html">Закладки HTML</button>
+              <button type="button" class="pill" id="welcome-csv">Пароли CSV</button>
+              <input type="file" id="welcome-html-file" accept=".html,.htm,text/html" hidden>
+              <input type="file" id="welcome-csv-file" accept=".csv,text/csv" hidden>
+            </div>
+            <p class="welcome-status" id="welcome-import-status" role="status" hidden></p>
+          </section>
+          <p class="welcome-status" id="welcome-error" role="alert" hidden></p>
+          <footer class="welcome-footer">
+            <button type="button" class="pill welcome-quiet" id="welcome-back" hidden>Назад</button>
+            <button type="button" class="pill welcome-quiet" id="welcome-skip">Пропустить настройку</button>
+            <button type="button" class="pill welcome-primary" id="welcome-next">Начать</button>
+          </footer>
+        </div>
+      </article>
+    </div>
+  </main>
   <div id="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

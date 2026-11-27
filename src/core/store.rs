@@ -607,6 +607,7 @@ impl Store {
 
 pub struct AppState {
     pub data_dir: PathBuf,
+    pub onboarding: crate::onboarding::Onboarding,
     pub store: Mutex<Store>,
     pub plugins: Mutex<PluginManager>,
     downloads: Mutex<Downloads>,
@@ -631,6 +632,7 @@ impl AppState {
             fs::TryLockError::WouldBlock => io::ErrorKind::WouldBlock.into(),
             fs::TryLockError::Error(error) => error,
         })?;
+        let onboarding = crate::onboarding::Onboarding::load(&data_dir)?;
         let legacy = data_dir.join("history.json");
         let mut imported_legacy = false;
         let db = history_db::open(&data_dir, || {
@@ -661,6 +663,7 @@ impl AppState {
 
         Ok(Self {
             data_dir,
+            onboarding,
             store: Mutex::new(store),
             plugins: Mutex::new(plugins),
             downloads: Mutex::new(downloads),

@@ -160,6 +160,9 @@ pub fn drain(app: &AppHandle) {
         return;
     };
     let profile = app.state::<crate::core::store::AppState>();
+    if profile.onboarding.pending() {
+        return;
+    }
     let requests = consume(&request_dir(&profile.data_dir));
     if requests.is_empty() {
         return;

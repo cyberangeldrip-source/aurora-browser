@@ -180,6 +180,7 @@ pub fn ui_state(app: AppHandle) -> Value {
             "version": APP_VERSION,
             "dataDir": state.data_dir.display().to_string(),
             "updates": cfg!(all(windows, target_arch = "x86_64")),
+            "welcome": state.onboarding.pending(),
         },
     })
 }

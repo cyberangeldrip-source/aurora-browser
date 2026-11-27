@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 const root = document.documentElement;
 const address = $('address');
 const chrome = $('chrome');
+const welcome = $('welcome');
 const menu = $('menu');
 const tabContext = $('tab-context');
 const panel = $('panel-overlay');
@@ -660,7 +661,7 @@ function setLayer() {
     layerQueued = false;
     const surface = !panel.hidden ? settingsPanel : [bookmarkMenu, tabContext, downloads, extensions, updatePanel, menu, suggest].find(item => !item.hidden);
     backdrop.hidden = !surface || !panel.hidden;
-    chrome.inert = !panel.hidden;
+    chrome.inert = !panel.hidden || !welcome.hidden;
     $('menu-button').setAttribute('aria-expanded', String(!menu.hidden));
     $('downloads-button').setAttribute('aria-expanded', String(!downloads.hidden));
     $('extensions-button').setAttribute('aria-expanded', String(!extensions.hidden));
@@ -1071,7 +1072,18 @@ async function refreshPasswordAccounts() {
 }
 
 $('migration-csv').hidden = $('migration-vault-info').hidden = $('migration-accounts').hidden = !isWindows;
-for (const [format, command, limit] of [['html', 'import_bookmark_html', 64], ['csv', 'import_password_csv', 8]]) {
+const migrationFormats = { html: ['import_bookmark_html', 64], csv: ['import_password_csv', 8] };
+async function importMigrationFile(format, file) {
+  const [command, limit] = migrationFormats[format];
+  if (file.size > limit * 1024 * 1024) throw new Error('Файл превышает допустимый размер.');
+  return core.invoke(command, { payload: await file.text() });
+}
+function migrationFileSummary(format, result) {
+  return format === 'csv'
+    ? 'Пароли добавлены или обновлены — ' + result.imported + '. Пропущено — ' + result.skipped
+    : 'Добавлено закладок — ' + result.bookmarks;
+}
+for (const format of Object.keys(migrationFormats)) {
   const trigger = $('migration-' + format);
   const field = $('migration-' + format + '-file');
   trigger.addEventListener('click', () => field.click());
@@ -1079,21 +1091,14 @@ for (const [format, command, limit] of [['html', 'import_bookmark_html', 64], ['
     const file = field.files[0];
     field.value = '';
     if (!file) return;
-    if (file.size > limit * 1024 * 1024) {
-      migrationStatus('migration-file-status', 'Файл превышает допустимый размер.');
-      return;
-    }
     trigger.disabled = true;
     migrationStatus('migration-file-status', 'Чтение файла…');
     try {
-      const result = await run(command, { payload: await file.text() });
-      const status = format === 'csv' && result
-        ? 'Пароли добавлены или обновлены — ' + result.imported + '. Пропущено — ' + result.skipped
-        : result ? 'Добавлено закладок — ' + result.bookmarks : 'Импорт завершился с ошибкой.';
-      migrationStatus('migration-file-status', status);
-      if (format === 'csv' && result) refreshPasswordAccounts();
-    } catch {
-      migrationStatus('migration-file-status', 'Не удалось прочитать файл.');
+      const result = await importMigrationFile(format, file);
+      migrationStatus('migration-file-status', migrationFileSummary(format, result));
+      if (format === 'csv') refreshPasswordAccounts();
+    } catch (error) {
+      migrationStatus('migration-file-status', error?.message ?? String(error));
     } finally {
       trigger.disabled = false;
     }
@@ -1560,14 +1565,16 @@ async function windowAction(action) {
 async function syncWindow() {
   const result = await run('window_state');
   if (!result) return;
-  const maximize = document.querySelector('[data-window="maximize"]');
   const glyph = result.maximized ? 'restore' : 'square';
-  if (maximize.dataset.icon === glyph) return;
-  maximize.dataset.icon = glyph;
-  maximize.replaceChildren(icon(glyph));
-  maximize.title = result.maximized ? 'Восстановить размер окна' : 'Развернуть';
+  for (const maximize of document.querySelectorAll('[data-window="maximize"]')) {
+    if (maximize.dataset.icon === glyph) continue;
+    maximize.dataset.icon = glyph;
+    maximize.replaceChildren(icon(glyph));
+    maximize.title = result.maximized ? 'Восстановить размер окна' : 'Развернуть';
+  }
 }
 function dispatch(action) {
+  if (!welcome.hidden) return;
   if (action === 'address') return focusAddress();
   if (action === 'newtab') return newTab();
   if (action === 'private') return newTab(true);
@@ -1636,6 +1643,7 @@ chrome.addEventListener('pointerdown', (e) => {
   else run('win_drag');
 });
 document.addEventListener('keydown', (e) => {
+  if (!welcome.hidden) return;
   if (confirmDialog.open || bookmarkEditor.open || groupEditor.open) return;
   if (e.key === 'Escape') {
     if ([bookmarkMenu, tabContext, suggest, panel, menu, downloads, extensions, updatePanel].some(layer => !layer.hidden)) dismissLayer();
@@ -1710,6 +1718,7 @@ async function init() {
   }
   await resync();
   syncWindow();
-  startUpdateUi();
+  if (state.meta?.welcome) startWelcome();
+  else startUpdateUi();
 }
 init();

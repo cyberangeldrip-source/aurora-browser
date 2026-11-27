@@ -6,6 +6,7 @@ mod commands;
 mod core;
 mod downloads;
 mod migration;
+mod onboarding;
 #[cfg(windows)]
 mod os_integration;
 mod pages;
@@ -57,7 +58,12 @@ pub mod layout {
             let address = if compact { 42.0 } else { 52.0 };
             address + if show_tabs { 44.0 } else { 0.0 } + if show_bookmarks { 36.0 } else { 0.0 }
         };
-        let overlay = f64::from(state.ui_overlay.load(Relaxed)).min((height - strip).max(0.0));
+        let available = (height - strip).max(0.0);
+        let overlay = if state.onboarding.pending() {
+            available
+        } else {
+            f64::from(state.ui_overlay.load(Relaxed)).min(available)
+        };
         Ok((width, height, strip, overlay))
     }
 
@@ -74,7 +80,9 @@ pub mod layout {
                 .0
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let desired = active.filter(|_| cfg!(windows) || overlay == 0.0 || strip == 0.0);
+            let desired = active.filter(|_| {
+                !state.onboarding.pending() && (cfg!(windows) || overlay == 0.0 || strip == 0.0)
+            });
             let changed = *visible != desired;
             let previous = if changed { visible.clone() } else { None };
             *visible = desired.clone();
@@ -165,6 +173,7 @@ fn run(launch: activation::Launch) -> tauri::Result<()> {
         commands::reopen_tab,
         commands::ui_state,
         commands::save_settings,
+        onboarding::finish_onboarding,
         commands::set_ui_overlay,
         commands::glass_frame,
         commands::toggle_bookmark,
@@ -271,7 +280,7 @@ fn run(launch: activation::Launch) -> tauri::Result<()> {
             }
             let window = builder.build()?;
             layout::set_theme(app.handle());
-            let (width, _, strip, _) = layout::metrics(app.handle())?;
+            let (width, _, strip, overlay) = layout::metrics(app.handle())?;
             let _ui = window.add_child(
                 tauri::webview::WebviewBuilder::new("ui", WebviewUrl::App("strip.html".into()))
                     .accept_first_mouse(true)
@@ -280,7 +289,7 @@ fn run(launch: activation::Launch) -> tauri::Result<()> {
                     .on_navigation(urls::is_chrome)
                     .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny),
                 tauri::LogicalPosition::new(0.0, 0.0),
-                tauri::LogicalSize::new(width, strip),
+                tauri::LogicalSize::new(width, strip + overlay),
             )?;
             #[cfg(windows)]
             crate::windows::install_chrome_downloads(&_ui);
@@ -299,8 +308,9 @@ fn run(launch: activation::Launch) -> tauri::Result<()> {
             window.show()?;
             browser::defer(app.handle(), move |app| {
                 let active = app.state::<AppState>().store_guard().tabs.active_id;
-                if let Err(error) = browser::activate(&app, active, false) {
-                    browser::emit(&app, "au://notice", error);
+                if !app.state::<AppState>().onboarding.pending() {
+                    browser::activate(&app, active, false)
+                        .unwrap_or_else(|error| browser::emit(&app, "au://notice", error));
                 }
                 activation::drain(&app);
             });
