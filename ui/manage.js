@@ -1,5 +1,49 @@
 'use strict';
 
+const autostartControl = $('system-autostart');
+const defaultBrowserButton = $('default-browser-choose');
+const defaultBrowserStatus = $('default-browser-status');
+let systemRequest = 0;
+let changingAutostart = false;
+let configuredAutostart = false;
+$('system-settings').hidden = !isWindows;
+
+async function loadSystemIntegration() {
+  if (!isWindows || changingAutostart) return;
+  const request = ++systemRequest;
+  const status = await run('system_integration');
+  if (request !== systemRequest) return;
+  if (!status) {
+    defaultBrowserStatus.textContent = 'Статус Windows недоступен';
+    defaultBrowserStatus.dataset.ready = 'false';
+    return;
+  }
+  configuredAutostart = Boolean(status.autostart);
+  autostartControl.checked = configuredAutostart;
+  autostartControl.disabled = false;
+  defaultBrowserStatus.dataset.ready = String(status.default_browser);
+  defaultBrowserStatus.textContent = status.default_browser
+    ? 'Aurora открывает веб-ссылки'
+    : 'Выберите Aurora в настройках Windows';
+  defaultBrowserButton.textContent = status.default_browser ? 'Настройки Windows' : 'Назначить';
+}
+
+autostartControl.addEventListener('change', async () => {
+  changingAutostart = true;
+  systemRequest++;
+  autostartControl.disabled = true;
+  const enabled = autostartControl.checked;
+  if (await run('set_autostart', { enabled })) configuredAutostart = enabled;
+  autostartControl.checked = configuredAutostart;
+  autostartControl.disabled = false;
+  changingAutostart = false;
+});
+defaultBrowserButton.addEventListener('click', async () => {
+  defaultBrowserButton.disabled = true;
+  await run('default_browser_settings');
+  defaultBrowserButton.disabled = false;
+});
+
 function submitForm(form, action) {
   form.addEventListener('submit', async event => {
     event.preventDefault();

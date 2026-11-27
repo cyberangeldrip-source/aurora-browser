@@ -1,6 +1,6 @@
 [package]
 name = "aurora-browser"
-version = "1.7.0"
+version = "1.9.0"
 description = "Aurora — быстрый стеклянный браузер с Rust-ядром"
 authors = ["Aurora Browser"]
 license = "MIT"
@@ -21,10 +21,19 @@ lz4_flex = "0.12"
 scraper = "0.24"
 csv = "1.4"
 zeroize = { version = "1.8", features = ["derive"] }
+notify = "8.2"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows = { version = "0.62", features = ["Win32_Security_Cryptography", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+winreg = "0.56"
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+base64 = "0.22"
+minisign-verify = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls-no-alpn", "system-proxy"] }
+semver = "1"
+sha2 = "0.10"
 
 [features]
 # по умолчанию ничего лишнего — бинарник остаётся маленьким и быстрым

@@ -1,12 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activation;
 mod browser;
 mod commands;
 mod core;
 mod downloads;
 mod migration;
+#[cfg(windows)]
+mod os_integration;
 mod pages;
 mod profiles;
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod update;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -147,7 +152,7 @@ pub mod layout {
     }
 }
 
-fn run() -> tauri::Result<()> {
+fn run(launch: activation::Launch) -> tauri::Result<()> {
     let invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         commands::navigate,
         commands::tab_action,
@@ -196,28 +201,54 @@ fn run() -> tauri::Result<()> {
         commands::fill_password,
         commands::browser_extensions,
         commands::password_manage,
+        os_integration::system_integration,
+        os_integration::set_autostart,
+        os_integration::default_browser_settings,
+    ];
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    let update_invoke: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        update::update_check,
+        update::update_install,
+        update::update_last_result,
     ];
     tauri::Builder::default()
         .register_uri_scheme_protocol("aurora", |ctx, request| {
             pages::handle(ctx.app_handle(), ctx.webview_label(), request)
         })
-        .setup(|app| {
+        .setup(move |app| {
             let root = match std::env::var_os("AURORA_DATA_DIR") {
                 Some(path) => std::path::PathBuf::from(path),
                 None => app.path().app_data_dir()?,
             };
             let profile = profiles::ActiveProfile::from_args(root)?;
-            let state = AppState::init(profile.path())?;
-            let tab = state
-                .store_guard()
-                .active()
-                .cloned()
-                .ok_or("Нет начальной вкладки")?;
+            let path = profile.path();
+            let state = match AppState::init(path.clone()) {
+                Ok(state) => state,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    activation::send(&path, &launch)?;
+                    std::process::exit(0);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(target) = &launch.target {
+                let mut store = state.store_guard();
+                if store.tabs.tabs.len() == 1 && store.tabs.tabs[0].url == urls::page_home() {
+                    let tab = &mut store.tabs.tabs[0];
+                    *tab = core::model::Tab::new(tab.id, target.clone());
+                } else {
+                    let tab = store.allocate_tab(target.clone());
+                    store.tabs.active_id = tab.id;
+                    store.tabs.tabs.push(tab);
+                }
+            }
             let chrome_profile = state.data_dir.join("Chrome");
             app.manage(state);
             app.manage(profile);
             app.manage(layout::ActiveView::default());
             app.manage(layout::ChromeBounds::default());
+            #[cfg(all(windows, target_arch = "x86_64"))]
+            app.manage(update::Updater::default());
+            app.manage(activation::watch(app.handle(), &path)?);
 
             let mut builder = tauri::window::WindowBuilder::new(app, "main")
                 .title("Aurora")
@@ -267,9 +298,11 @@ fn run() -> tauri::Result<()> {
 
             window.show()?;
             browser::defer(app.handle(), move |app| {
-                if let Err(error) = browser::activate(&app, tab.id, false) {
+                let active = app.state::<AppState>().store_guard().tabs.active_id;
+                if let Err(error) = browser::activate(&app, active, false) {
                     browser::emit(&app, "au://notice", error);
                 }
+                activation::drain(&app);
             });
             Ok(())
         })
@@ -277,19 +310,18 @@ fn run() -> tauri::Result<()> {
             if window.label() == "main"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {
-                let state = window.state::<AppState>();
-                {
-                    let store = state.store_guard();
-                    state.save_settings(&store);
-                    state.save_tabs(&store);
-                    state.save_bookmarks(&store);
-                }
-                state.save_downloads();
-                state.flush_saves();
+                window.state::<AppState>().save_before_exit();
             }
         })
         .invoke_handler(move |request: tauri::ipc::Invoke<tauri::Wry>| {
             if request.message.webview_ref().label() == "ui" {
+                #[cfg(all(windows, target_arch = "x86_64"))]
+                if matches!(
+                    request.message.command(),
+                    "update_check" | "update_install" | "update_last_result"
+                ) {
+                    return update_invoke(request);
+                }
                 #[cfg(windows)]
                 if matches!(
                     request.message.command(),
@@ -298,6 +330,9 @@ fn run() -> tauri::Result<()> {
                         | "fill_password"
                         | "browser_extensions"
                         | "password_manage"
+                        | "system_integration"
+                        | "set_autostart"
+                        | "default_browser_settings"
                 ) {
                     return vault_invoke(request);
                 }
@@ -315,6 +350,14 @@ fn run() -> tauri::Result<()> {
 fn main() {
     let mut args = std::env::args_os().skip(1);
     if let Some(command) = args.next() {
+        #[cfg(all(windows, target_arch = "x86_64"))]
+        if command == "--apply-update" {
+            if let Err(error) = update::apply_worker() {
+                eprintln!("Aurora: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
         if command == "--import-brave" {
             print_migration_result(migration::migrate_brave());
             return;
@@ -328,8 +371,25 @@ fn main() {
             print_migration_result(result);
             return;
         }
+        #[cfg(windows)]
+        if command == "--register-browser" || command == "--unregister-browser" {
+            let result = if command == "--register-browser" {
+                os_integration::register_browser()
+            } else {
+                os_integration::unregister_browser()
+            };
+            if let Err(error) = result {
+                eprintln!("Aurora: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
     }
-    if let Err(error) = run() {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    let _runtime_guard = update::runtime_guard();
+    let result = activation::Launch::parse(std::env::args_os().skip(1))
+        .and_then(|launch| run(launch).map_err(|error| error.to_string()));
+    if let Err(error) = result {
         eprintln!("Aurora: {error}");
         #[cfg(windows)]
         {

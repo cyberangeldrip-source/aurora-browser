@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use url::Url;
 
 use crate::core::model::Settings;
@@ -85,9 +87,46 @@ pub fn bookmark_url(raw: &str) -> Option<String> {
     is_web(&url).then(|| url.into())
 }
 
+pub const HTML_EXTENSIONS: &[&str] = &["htm", "html", "shtml", "xht", "xhtml"];
+
+pub fn local_html(url: &Url) -> bool {
+    url.scheme() == "file"
+        && url.host_str().is_none()
+        && url.to_file_path().ok().is_some_and(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    HTML_EXTENSIONS
+                        .iter()
+                        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+                })
+        })
+}
+
+fn typed_file(raw: &str) -> Option<String> {
+    let url = Url::parse(raw).ok()?;
+    local_html(&url).then(|| url.into())
+}
+
+pub fn shell_target(raw: &std::ffi::OsStr) -> Option<String> {
+    if let Some(url) = raw
+        .to_str()
+        .and_then(|raw| bookmark_url(raw).or_else(|| typed_file(raw)))
+    {
+        return Some(url);
+    }
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return None;
+    }
+    let url = Url::from_file_path(path).ok()?;
+    (local_html(&url) && path.is_file()).then(|| url.into())
+}
+
 pub fn restore_url(raw: &str) -> String {
     normalize_maybe(raw)
         .or_else(|| bookmark_url(raw))
+        .or_else(|| typed_file(raw))
         .unwrap_or_else(page_home)
 }
 
@@ -108,6 +147,9 @@ pub fn resolve_input(input: &str, settings: &Settings) -> String {
         return "about:blank".into();
     }
     if let Some(url) = bookmark_url(raw) {
+        return url;
+    }
+    if let Some(url) = typed_file(raw) {
         return url;
     }
     if !raw.contains(char::is_whitespace) && !raw.contains("://") {
@@ -163,6 +205,14 @@ pub fn title_for_url(raw: &str) -> String {
     Url::parse(raw)
         .ok()
         .and_then(|url| {
+            if local_html(&url) {
+                return url
+                    .to_file_path()
+                    .ok()?
+                    .file_name()?
+                    .to_str()
+                    .map(str::to_owned);
+            }
             url.host_str()
                 .map(|host| host.trim_start_matches("www.").to_owned())
         })
@@ -238,5 +288,25 @@ mod tests {
         );
         assert_eq!(title_for_url(&page_home()), "Новая вкладка");
         assert_eq!(title_for_url("aurora://history/"), "История");
+    }
+
+    #[test]
+    fn local_html_is_separate_from_web_navigation() {
+        let path = if cfg!(windows) {
+            Path::new(r"C:\Users\Public\Documents\Пример HTML #1.HTML")
+        } else {
+            Path::new("/tmp/Пример HTML #1.HTML")
+        };
+        let url = Url::from_file_path(path).unwrap();
+        assert!(local_html(&url));
+        assert!(!can_visit(&url));
+        assert_eq!(
+            shell_target(url.as_str().as_ref()).as_deref(),
+            Some(url.as_str())
+        );
+        assert_eq!(title_for_url(url.as_str()), "Пример HTML #1.HTML");
+        assert!(!local_html(
+            &Url::parse("file://fileserver/share/test.html").unwrap()
+        ));
     }
 }

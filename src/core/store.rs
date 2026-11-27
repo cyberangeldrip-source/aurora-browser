@@ -627,7 +627,10 @@ impl AppState {
             .read(true)
             .write(true)
             .open(data_dir.join("profile.lock"))?;
-        profile_lock.try_lock().map_err(io::Error::other)?;
+        profile_lock.try_lock().map_err(|error| match error {
+            fs::TryLockError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+            fs::TryLockError::Error(error) => error,
+        })?;
         let legacy = data_dir.join("history.json");
         let mut imported_legacy = false;
         let db = history_db::open(&data_dir, || {
@@ -739,6 +742,17 @@ impl AppState {
         if self.saver.send(SaveJob::Flush(reply)).is_ok() {
             let _ = done.recv_timeout(Duration::from_secs(2));
         }
+    }
+
+    pub fn save_before_exit(&self) {
+        {
+            let store = self.store_guard();
+            self.save_settings(&store);
+            self.save_tabs(&store);
+            self.save_bookmarks(&store);
+        }
+        self.save_downloads();
+        self.flush_saves();
     }
 }
 

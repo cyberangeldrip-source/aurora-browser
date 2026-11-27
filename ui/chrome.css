@@ -269,6 +269,44 @@ body.tab-dragging, body.tab-dragging #chrome * { cursor: grabbing !important; }
 #extensions { width: min(340px, calc(100vw - 24px)); }
 #extensions-quick-list { max-height: calc(100vh - var(--menu-top) - 56px); }
 #extensions-quick-list > .muted { padding: 4px 7px; }
+#update-panel { width: min(372px, calc(100vw - 24px)); }
+.update-indicator {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 29px; padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--edge)); border-radius: 999px;
+  color: var(--ink); font-size: .79em; font-weight: 650; white-space: nowrap;
+  background: radial-gradient(ellipse at 32% -30%, rgb(219 244 255 / .26), transparent 70%),
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 30%, var(--hover)), var(--fill));
+  box-shadow: inset 0 .6px var(--light-rim);
+}
+.update-indicator:hover, .update-indicator[aria-expanded="true"] { filter: brightness(1.16); }
+.update-indicator svg { width: 15px; height: 15px; }
+.update-indicator[data-kind="complete"] {
+  border-color: rgb(94 200 164 / .54);
+  background: linear-gradient(145deg, rgb(90 202 165 / .26), var(--fill));
+}
+.update-body { display: grid; gap: 9px; max-height: calc(100vh - var(--menu-top) - 56px); padding: 12px 14px 14px; }
+.update-version { font-size: 1.08em; font-weight: 650; letter-spacing: -.02em; }
+.update-notes { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.update-status { font-size: .88em; overflow-wrap: anywhere; }
+.update-status[data-error="true"] { color: #ffbed3; }
+:root[data-theme="light"] .update-status[data-error="true"] { color: #812852; }
+.update-actions { justify-content: end; }
+.update-primary {
+  color: var(--ink);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 38%, var(--hover)), var(--hover));
+  box-shadow: inset 0 .65px var(--light-rim);
+}
+.update-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 47%, var(--hover)); }
+.update-progress { width: 100%; height: 6px; appearance: none; border: 0; border-radius: 99px; overflow: hidden; }
+.update-progress::-webkit-progress-bar { background: var(--fill); }
+.update-progress::-webkit-progress-value { background: linear-gradient(90deg, var(--accent), #9bdcfb); border-radius: inherit; }
+@media (max-width: 840px) {
+  .update-indicator { min-width: 31px; justify-content: center; padding-inline: 6px; gap: 4px; }
+  #update-badge-text { display: none; }
+  .update-indicator::after { content: "Обновление"; }
+  .update-indicator[data-kind="complete"]::after { content: "Обновлено"; }
+  .update-indicator[data-kind="loading"]::after { content: "Загрузка"; }
+}
 .downloads-head {
   display: flex; align-items: center; gap: 4px; padding: 8px 9px 8px 15px;
   border-bottom: 1px solid var(--edge-faint);
@@ -330,7 +368,20 @@ hr { border: 0; border-top: 1px solid var(--edge-faint); margin: 4px 5px; }
 .panel-head h1 { letter-spacing: -.03em; font-size: 1.42em; }
 .panel-body { flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 16px 20px 24px; }
 .view { display: grid; gap: 12px; }
-.view > h2 { font-size: .84em; color: var(--muted); font-weight: 650; margin: 5px 0 -4px; }
+.view > h2, .system-settings > h2 { font-size: .84em; color: var(--muted); font-weight: 650; margin: 5px 0 -4px; }
+.system-settings { display: grid; gap: 12px; }
+.system-setting-label { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.system-setting-label strong { font-weight: 610; }
+.system-setting-label p { margin-top: 2px; font-size: .82em; }
+.system-setting-icon {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px;
+  color: var(--ink); border-radius: 10px; border: 1px solid var(--edge-faint);
+  background: linear-gradient(148deg, color-mix(in srgb, var(--accent) 22%, var(--hover)), var(--fill));
+  box-shadow: inset 0 .65px var(--light-rim);
+}
+.system-setting-icon svg { width: 17px; height: 17px; }
+#default-browser-choose { flex: none; }
+#default-browser-status[data-ready="true"] { color: color-mix(in srgb, var(--ink) 70%, #64ba9f); }
 .settings-card { background: linear-gradient(160deg, var(--fill), transparent); border: 1px solid var(--edge-faint); border-radius: 15px; overflow: hidden; }
 .setting-row {
   display: flex; gap: 10px; min-height: 45px; align-items: center; justify-content: space-between;

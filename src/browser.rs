@@ -46,7 +46,7 @@ pub async fn on_main<T: Send + 'static>(
 }
 
 fn update_source(app: &AppHandle, id: u32, url: &url::Url, same_document: bool, record: bool) {
-    if !urls::can_visit(url) {
+    if !urls::can_visit(url) && !urls::local_html(url) {
         return;
     }
     let state = app.state::<AppState>();
@@ -78,7 +78,7 @@ fn update_source(app: &AppHandle, id: u32, url: &url::Url, same_document: bool, 
 }
 
 pub fn update_title(app: &AppHandle, id: u32, url: &url::Url, title: &str) {
-    if !urls::is_web(url) || title.trim().is_empty() {
+    if (!urls::is_web(url) && !urls::local_html(url)) || title.trim().is_empty() {
         return;
     }
     let state = app.state::<AppState>();
@@ -239,9 +239,15 @@ pub fn ensure_view(app: &AppHandle, tab: &Tab, start: &str) -> Result<Webview, S
     let window = app.get_window("main").ok_or("Окно было закрыто")?;
     let (width, height, strip, _) = layout::metrics(app).map_err(|error| error.to_string())?;
     let url = url::Url::parse(start).map_err(|error| error.to_string())?;
+    let local = urls::local_html(&url).then(|| url.clone());
     let state = app.state::<AppState>();
     let builder = tauri::webview::WebviewBuilder::new(&tab.label, WebviewUrl::External(url))
-        .on_navigation(urls::can_visit)
+        .on_navigation(move |url| {
+            urls::can_visit(url)
+                || local
+                    .as_ref()
+                    .is_some_and(|allowed| urls::local_html(url) && allowed.path() == url.path())
+        })
         .incognito(tab.private);
     #[cfg(windows)]
     let builder = builder.browser_extensions_enabled(true);
@@ -436,6 +442,11 @@ pub fn visit(app: &AppHandle, input: &str) -> Result<(), String> {
         (tab, target)
     };
     let url = url::Url::parse(&target).map_err(|error| error.to_string())?;
+    if urls::local_html(&url) && tab.url != target {
+        let view = new_tab(app, Some(target), None, tab.private)?;
+        let _ = view.set_focus();
+        return Ok(());
+    }
     let view = ensure_view(app, &tab, &target)?;
     view.navigate(url).map_err(|error| error.to_string())?;
     let _ = view.set_focus();

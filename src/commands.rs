@@ -176,7 +176,11 @@ pub fn ui_state(app: AppHandle) -> Value {
         "canBookmark": urls::bookmark_url(url).is_some(),
         "canReopen": store.last_closed().is_some(),
         "bookmarks": store.bookmarks,
-        "meta": { "version": APP_VERSION, "dataDir": state.data_dir.display().to_string() },
+        "meta": {
+            "version": APP_VERSION,
+            "dataDir": state.data_dir.display().to_string(),
+            "updates": cfg!(all(windows, target_arch = "x86_64")),
+        },
     })
 }
 

@@ -12,6 +12,7 @@ const bookmarkMenu = $('bookmark-menu');
 let bookmarkAnchor;
 const downloads = $('downloads');
 const extensions = $('extensions');
+const updatePanel = $('update-panel');
 const suggest = $('suggest');
 const suggestions = $('suggest-items');
 const settingsPanel = panel.querySelector('.panel');
@@ -53,7 +54,12 @@ const icons = {
   private: '<circle cx="7" cy="15" r="3.5"/><circle cx="17" cy="15" r="3.5"/><path d="M10.5 15h3M4 9h16M7 9l1.5-4h7L17 9"/>',
   alert: '<path d="m10.5 4-8 14a1.5 1.5 0 0 0 1.3 2h16.4a1.5 1.5 0 0 0 1.3-2l-8-14a1.7 1.7 0 0 0-3 0ZM12 9v4m0 3h.01"/>',
   settings: '<path d="M4 6h6m4 0h6M4 12h10m4 0h2M4 18h3m4 0h9"/><circle cx="12" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="9" cy="18" r="2"/>',
-  plugin: '<path d="M8 5h8v5h4v4h-4v4a3 3 0 0 1-3 3h-2a3 3 0 0 1-3-3v-4H4v-4h4z"/>',
+  plugin: '<rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="m9 10-2 2 2 2m6-4 2 2-2 2m-2.7-3.5-.6 3"/>',
+  extension: '<path d="M10 5.5V5a2 2 0 0 1 4 0v.5h3.2a1.8 1.8 0 0 1 1.8 1.8V10h.6a2 2 0 0 1 0 4H19v3.2a1.8 1.8 0 0 1-1.8 1.8H7.3a1.8 1.8 0 0 1-1.8-1.8V14H5a2 2 0 0 1 0-4h.5V7.3a1.8 1.8 0 0 1 1.8-1.8z"/><path d="M10 15.8h4" opacity=".55"/>',
+  'external-link': '<path d="M13 5h6v6m0-6-9 9m7-.5V17a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3"/>',
+  startup: '<path d="M12 3.5v7m-4.6-5a7.7 7.7 0 1 0 9.2 0"/>',
+  update: '<path d="M19 10a7.2 7.2 0 1 0-.8 7.6M19 4.5V10h-5.5"/><path d="M12 15v-5m-2 2 2-2 2 2"/>',
+  check: '<path d="m5.5 12.5 4 4 9-9"/>',
   info: '<circle cx="12" cy="12" r="8"/><path d="M12 11v5m0-8h.01"/>',
 };
 function icon(name) {
@@ -652,12 +658,13 @@ function setLayer() {
   layerQueued = true;
   queueMicrotask(() => {
     layerQueued = false;
-    const surface = !panel.hidden ? settingsPanel : [bookmarkMenu, tabContext, downloads, extensions, menu, suggest].find(item => !item.hidden);
+    const surface = !panel.hidden ? settingsPanel : [bookmarkMenu, tabContext, downloads, extensions, updatePanel, menu, suggest].find(item => !item.hidden);
     backdrop.hidden = !surface || !panel.hidden;
     chrome.inert = !panel.hidden;
     $('menu-button').setAttribute('aria-expanded', String(!menu.hidden));
     $('downloads-button').setAttribute('aria-expanded', String(!downloads.hidden));
     $('extensions-button').setAttribute('aria-expanded', String(!extensions.hidden));
+    $('update-button').setAttribute('aria-expanded', String(!updatePanel.hidden));
     clearTimeout(layerTimer);
     if (surface && currentOverlay === 0) {
       currentOverlay = 10000;
@@ -691,6 +698,7 @@ function closeLayer() {
   menu.hidden = true;
   downloads.hidden = true;
   extensions.hidden = true;
+  updatePanel.hidden = true;
   clearTimeout(downloadTimer);
   panel.hidden = true;
   panelReturnFocus = undefined;
@@ -701,10 +709,10 @@ function dismissLayer() {
   const folderButton = bookmarkMenu.hidden ? null : bookmarkAnchor;
   const target = contextTabId ? tabList.querySelector('[data-id="' + contextTabId + '"] .tab-select')
     : !downloads.hidden ? $('downloads-button') : !extensions.hidden ? $('extensions-button')
-    : !panel.hidden ? panelReturnFocus : !menu.hidden ? $('menu-button') : address;
+    : !updatePanel.hidden ? $('update-button') : !panel.hidden ? panelReturnFocus : !menu.hidden ? $('menu-button') : address;
   closeLayer();
   run('focus_chrome').then(() => {
-    if (bookmarkMenu.hidden && tabContext.hidden && menu.hidden && panel.hidden && downloads.hidden && extensions.hidden && suggest.hidden) {
+    if ([bookmarkMenu, tabContext, menu, panel, downloads, extensions, updatePanel, suggest].every(layer => layer.hidden)) {
       const previous = folderButton ?? target;
       (previous?.getClientRects().length ? previous : $('menu-button')).focus({ preventScroll: true });
     }
@@ -831,7 +839,7 @@ function navigate(input) {
 }
 
 address.addEventListener('focus', () => {
-  if ([menu, downloads, extensions, bookmarkMenu, tabContext].some(popup => !popup.hidden)) closeLayer();
+  if ([menu, downloads, extensions, updatePanel, bookmarkMenu, tabContext].some(popup => !popup.hidden)) closeLayer();
   editAddress = true;
   address.select();
 });
@@ -1107,6 +1115,7 @@ function openPanel(view) {
   menu.hidden = true;
   downloads.hidden = true;
   extensions.hidden = true;
+  updatePanel.hidden = true;
   clearTimeout(downloadTimer);
   currentPanel = view;
   panel.hidden = false;
@@ -1117,6 +1126,7 @@ function openPanel(view) {
   }
   $('panel-title').textContent = viewTitles[view];
   $('panel-body').scrollTop = 0;
+  if (view === 'settings') loadSystemIntegration();
   if (view === 'bookmarks') renderBookmarks();
   if (view === 'tabs') renderTabList();
   if (view === 'plugins') { loadPlugins(); loadBrowserExtensions(); }
@@ -1616,6 +1626,7 @@ chrome.addEventListener('pointerdown', (e) => {
       (!menu.hidden && !e.target.closest('#menu-button')) ||
       (!downloads.hidden && !e.target.closest('#downloads-button')) ||
       (!extensions.hidden && !e.target.closest('#extensions-button')) ||
+      (!updatePanel.hidden && !e.target.closest('#update-button')) ||
       (!bookmarkMenu.hidden && !e.target.closest('[aria-controls="bookmark-menu"]'))) {
     closeLayer();
   }
@@ -1627,7 +1638,7 @@ chrome.addEventListener('pointerdown', (e) => {
 document.addEventListener('keydown', (e) => {
   if (confirmDialog.open || bookmarkEditor.open || groupEditor.open) return;
   if (e.key === 'Escape') {
-    if (!bookmarkMenu.hidden || !tabContext.hidden || !suggest.hidden || !panel.hidden || !menu.hidden || !downloads.hidden || !extensions.hidden) dismissLayer();
+    if ([bookmarkMenu, tabContext, suggest, panel, menu, downloads, extensions, updatePanel].some(layer => !layer.hidden)) dismissLayer();
     else if (document.activeElement === address) address.blur();
     return;
   }
@@ -1664,7 +1675,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-window.addEventListener('focus', syncWindow);
+window.addEventListener('focus', () => {
+  syncWindow();
+  if (currentPanel === 'settings') loadSystemIntegration();
+});
 let chromeWidth = window.innerWidth;
 function refreshGlassViewport() {
   liquidGlass.setPage(glassPage().key);
@@ -1696,5 +1710,6 @@ async function init() {
   }
   await resync();
   syncWindow();
+  startUpdateUi();
 }
 init();

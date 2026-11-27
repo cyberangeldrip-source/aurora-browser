@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="chrome.css">
   <link rel="stylesheet" href="tooltip.css">
   <script src="liquid.js" defer></script>
+  <script src="update.js" defer></script>
   <script src="strip.js" defer></script>
   <script src="manage.js" defer></script>
   <script src="tooltip.js" defer></script>
@@ -43,8 +44,9 @@
         <div class="progress" id="progress" hidden></div>
       </form>
       <div class="tool-group">
+        <button type="button" class="update-indicator" id="update-button" data-icon="update" title="Доступно обновление" aria-label="Доступно обновление" aria-expanded="false" aria-controls="update-panel" hidden><span id="update-badge-text"></span></button>
         <button type="button" class="icon-button" id="downloads-button" data-action="downloads" data-icon="download" title="Загрузки (Ctrl+J)" aria-expanded="false" aria-controls="downloads"></button>
-        <button type="button" class="icon-button" id="extensions-button" data-icon="plugin" title="Расширения" aria-expanded="false" aria-controls="extensions" hidden></button>
+        <button type="button" class="icon-button" id="extensions-button" data-icon="extension" title="Расширения" aria-expanded="false" aria-controls="extensions" hidden></button>
         <button type="button" class="icon-button" id="menu-button" data-icon="menu" title="Меню Aurora" aria-expanded="false" aria-controls="menu"></button>
       </div>
       <div id="compact-window-slot" hidden></div>
@@ -87,6 +89,7 @@
       </div>
       <button type="button" data-command="fullscreen" data-icon="fullscreen">Во весь экран <kbd>F11</kbd></button>
       <button type="button" data-command="settings" data-icon="settings">Настройки <kbd>Ctrl+,</kbd></button>
+      <button type="button" id="update-menu-button" data-icon="update" hidden>Обновления Aurora</button>
       <button type="button" data-command="transfer" data-icon="import">Перенос данных</button>
       <button type="button" data-command="profiles" data-icon="account">Профили и пароли</button>
     </div>
@@ -100,6 +103,23 @@
     </header>
     <div id="download-rows" class="download-rows" aria-label="Список загрузок"></div>
     <p id="downloads-empty" class="muted">Загруженные файлы появятся здесь.</p>
+  </section>
+
+  <section id="update-panel" class="menu glass" aria-labelledby="update-title" hidden>
+    <header class="downloads-head">
+      <h2 id="update-title">Обновления Aurora</h2>
+      <button type="button" class="icon-button" id="update-close" data-icon="close" title="Закрыть обновления"></button>
+    </header>
+    <div class="menu-items update-body">
+      <p class="update-version" id="update-version" hidden></p>
+      <p class="update-notes" id="update-notes" hidden></p>
+      <p class="muted update-status" id="update-status" role="status"></p>
+      <progress class="update-progress" id="update-progress" aria-label="Загрузка обновления" max="100" value="0" hidden></progress>
+      <div class="button-row update-actions">
+        <button type="button" class="pill" id="update-check-again">Проверить</button>
+        <button type="button" class="pill update-primary" id="update-install" hidden>Обновить и перезапустить</button>
+      </div>
+    </div>
   </section>
 
   <section id="extensions" class="menu glass" aria-labelledby="extensions-title" hidden>
@@ -129,6 +149,25 @@
         <header class="panel-head"><h1 id="panel-title">Настройки</h1><button type="button" class="icon-button" id="panel-close" data-icon="close" title="Закрыть (Esc)"></button></header>
         <div class="panel-body" id="panel-body">
           <div class="view" id="view-settings">
+            <div class="system-settings" id="system-settings" hidden>
+              <h2>Интеграция с Windows</h2>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div class="system-setting-label">
+                    <span class="system-setting-icon" data-icon="external-link" aria-hidden="true"></span>
+                    <div><strong>Браузер по умолчанию</strong><p class="muted" id="default-browser-status" role="status">Проверяем настройки Windows…</p></div>
+                  </div>
+                  <button type="button" class="pill" id="default-browser-choose">Назначить</button>
+                </div>
+                <label class="setting-row" for="system-autostart">
+                  <span class="system-setting-label">
+                    <span class="system-setting-icon" data-icon="startup" aria-hidden="true"></span>
+                    <span>Запускать Aurora при входе в Windows</span>
+                  </span>
+                  <input type="checkbox" class="switch" id="system-autostart" disabled>
+                </label>
+              </div>
+            </div>
             <h2>Внешний вид</h2>
             <div class="settings-card">
               <label class="setting-row" for="theme"><span>Тема</span><select id="theme" data-setting="theme"><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label>
