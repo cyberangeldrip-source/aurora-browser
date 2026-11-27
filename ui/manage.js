@@ -79,24 +79,42 @@ submitForm($('profile-create'), async () => {
 });
 
 let vaultRecords = [];
+let vaultEditing;
+function vaultAccountLabel({ username, variant }) {
+  return (username || 'Без имени пользователя') + (variant ? ' · Вариант ' + variant : '');
+}
+function resetVaultEditor() {
+  vaultEditing = undefined;
+  $('vault-save').reset();
+  $('vault-site').readOnly = $('vault-user').readOnly = false;
+  $('vault-cancel').hidden = true;
+}
 function renderVault() {
   const query = $('vault-filter').value.trim().toLowerCase();
-  const visible = vaultRecords.filter(item => item.some(value => value.toLowerCase().includes(query)));
-  $('vault-list').replaceChildren(...visible.map(([site, username]) => {
+  const visible = vaultRecords.filter(({ site, username }) => site.toLowerCase().includes(query) || username.toLowerCase().includes(query));
+  $('vault-list').replaceChildren(...visible.map(record => {
+    const { id, site, username } = record;
     const row = toText('div', 'item', '');
     const label = toText('span', 'item-text', '');
-    label.append(toText('strong', 'item-title', site), toText('small', 'item-subtitle', username || 'Без имени'));
+    label.append(toText('strong', 'item-title', site), toText('small', 'item-subtitle', vaultAccountLabel(record)));
     const edit = toText('button', 'pill', 'Заменить пароль');
     edit.addEventListener('click', () => {
+      vaultEditing = record;
       $('vault-site').value = site;
       $('vault-user').value = username;
+      $('vault-site').readOnly = $('vault-user').readOnly = true;
+      $('vault-cancel').hidden = false;
       $('vault-secret').value = '';
       $('vault-secret').focus();
     });
     const remove = button('Удалить сохранённый вход', 'close', 'icon-button', async () => {
-      if (await confirmAction('Удалить сохранённый вход?', site, 'Удалить')) {
-        const records = await run('password_manage', { action: 'remove', site, username });
-        if (Array.isArray(records)) { vaultRecords = records; renderVault(); }
+      if (await confirmAction('Удалить сохранённый вход?', site + ' · ' + vaultAccountLabel(record), 'Удалить')) {
+        const records = await run('password_manage', { action: 'remove', site, username, id });
+        if (Array.isArray(records)) {
+          if (vaultEditing === record) resetVaultEditor();
+          vaultRecords = records;
+          renderVault();
+        }
       }
     });
     row.append(label, edit, remove);
@@ -106,18 +124,23 @@ function renderVault() {
 }
 async function loadVault() {
   if (!isWindows) return;
+  resetVaultEditor();
   vaultRecords = await run('password_manage', { action: 'list', site: '', username: '' }) ?? [];
   renderVault();
 }
 $('vault-panel').hidden = !isWindows;
 $('vault-filter').addEventListener('input', renderVault);
+$('vault-cancel').addEventListener('click', () => {
+  resetVaultEditor();
+  $('vault-site').focus();
+});
 submitForm($('vault-save'), async () => {
-  const data = { action: 'save', site: $('vault-site').value.trim(), username: $('vault-user').value, password: $('vault-secret').value };
+  const data = { action: 'save', id: vaultEditing?.id, site: $('vault-site').value.trim(), username: $('vault-user').value, password: $('vault-secret').value };
   $('vault-secret').value = '';
   const records = await run('password_manage', data);
   data.password = '';
   if (Array.isArray(records)) {
-    $('vault-save').reset();
+    resetVaultEditor();
     vaultRecords = records;
     renderVault();
   }

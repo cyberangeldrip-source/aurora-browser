@@ -1,6 +1,6 @@
 [package]
 name = "aurora-browser"
-version = "1.10.0"
+version = "1.10.1"
 description = "Aurora — быстрый стеклянный браузер с Rust-ядром"
 authors = ["Aurora Browser"]
 license = "MIT"

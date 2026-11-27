@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ static VAULT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct Login {
+    #[serde(default)]
+    id: String,
     origin: String,
     username: String,
     password: String,
@@ -26,19 +28,51 @@ struct Login {
 #[derive(Serialize)]
 pub struct PasswordImport {
     pub imported: usize,
+    pub duplicates: usize,
     pub skipped: usize,
 }
 
 #[derive(Serialize)]
-pub struct Account {
-    pub index: usize,
+pub struct VaultRecord {
+    pub id: String,
+    pub site: String,
     pub username: String,
+    pub variant: Option<usize>,
+}
+
+fn stored_origin(raw: &str) -> Option<String> {
+    let url = Url::parse(raw).ok()?;
+    crate::core::urls::is_web(&url).then(|| url.origin().ascii_serialization())
 }
 
 pub fn origin(raw: &str) -> Option<String> {
-    let url = Url::parse(raw).ok()?;
-    (crate::core::urls::is_web(&url) && url.scheme() == "https")
-        .then(|| url.origin().ascii_serialization())
+    stored_origin(raw).filter(|site| site.starts_with("https://"))
+}
+
+fn new_id() -> Result<String, String> {
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).map_err(|_| "Не удалось создать идентификатор входа")?;
+    Ok(format!("{:032x}", u128::from_le_bytes(bytes)))
+}
+
+impl Login {
+    fn key(&self) -> (&str, &str, &str) {
+        (&self.origin, &self.username, &self.password)
+    }
+}
+
+fn records(entries: &[Login]) -> Vec<VaultRecord> {
+    entries
+        .chunk_by(|a, b| a.origin == b.origin && a.username == b.username)
+        .flat_map(|group| {
+            group.iter().enumerate().map(|(index, entry)| VaultRecord {
+                id: entry.id.clone(),
+                site: entry.origin.clone(),
+                username: entry.username.clone(),
+                variant: (group.len() > 1).then_some(index + 1),
+            })
+        })
+        .collect()
 }
 
 fn protect(data: &[u8], encrypt: bool) -> Result<Zeroizing<Vec<u8>>, String> {
@@ -108,7 +142,9 @@ fn parse(input: &str) -> Result<(Vec<Login>, usize), String> {
     if input.len() > CSV_LIMIT {
         return Err("Размер CSV превышает 8 МБ".into());
     }
-    let mut reader = csv::Reader::from_reader(input.trim_start_matches('\u{feff}').as_bytes());
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .from_reader(input.trim_start_matches('\u{feff}').as_bytes());
     let header = reader
         .headers()
         .map_err(|_| "Не удалось прочитать заголовки CSV")?;
@@ -129,23 +165,24 @@ fn parse(input: &str) -> Result<(Vec<Login>, usize), String> {
         .read_record(&mut record)
         .map_err(|_| "Некорректная строка CSV")?
     {
-        let site = record.get(address).and_then(origin);
-        let username = record.get(user).unwrap_or_default();
-        let password = record.get(secret).unwrap_or_default();
-        if let Some(origin) = site
-            .filter(|_| !password.is_empty() && password.len() <= 8192 && username.len() <= 4096)
-        {
-            logins.push(Login {
-                origin,
-                username: username.into(),
-                password: password.into(),
-            });
-        } else {
+        let (Some(origin), Some(username), Some(password)) = (
+            record.get(address).and_then(stored_origin),
+            record.get(user),
+            record.get(secret),
+        ) else {
             skipped += 1;
+            continue;
+        };
+        if password.is_empty() || password.len() > 8192 || username.len() > 4096 {
+            skipped += 1;
+            continue;
         }
-    }
-    if logins.is_empty() {
-        return Err("В CSV нет паролей для поддерживаемых HTTPS-сайтов".into());
+        logins.push(Login {
+            id: String::new(),
+            origin,
+            username: username.into(),
+            password: password.into(),
+        });
     }
     Ok((logins, skipped))
 }
@@ -153,30 +190,35 @@ fn parse(input: &str) -> Result<(Vec<Login>, usize), String> {
 pub fn import(profile: &Path, input: Zeroizing<String>) -> Result<PasswordImport, String> {
     let (incoming, skipped) = parse(&input)?;
     let _gate = VAULT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let mut merged: BTreeMap<_, _> = load(profile)?
-        .into_iter()
-        .map(|item| ((item.origin.clone(), item.username.clone()), item))
+    let mut entries = load(profile)?;
+    let mut seen: HashSet<_> = entries.iter().map(Login::key).collect();
+    let selected: Vec<_> = incoming
+        .iter()
+        .map(|item| seen.insert(item.key()))
         .collect();
-    let mut imported = 0;
-    for item in incoming {
-        let key = (item.origin.clone(), item.username.clone());
-        if merged
-            .get(&key)
-            .is_some_and(|old| old.password == item.password)
-        {
-            continue;
+    drop(seen);
+    let mut report = PasswordImport {
+        imported: 0,
+        duplicates: 0,
+        skipped,
+    };
+    for (mut item, is_new) in incoming.into_iter().zip(selected) {
+        if is_new {
+            item.id = new_id()?;
+            entries.push(item);
+            report.imported += 1;
+        } else {
+            report.duplicates += 1;
         }
-        merged.insert(key, item);
-        imported += 1;
     }
-    if imported != 0 {
-        let entries: Vec<_> = merged.into_values().collect();
-        save(profile, &entries)?;
+    if report.imported != 0 {
+        save(profile, &mut entries)?;
     }
-    Ok(PasswordImport { imported, skipped })
+    Ok(report)
 }
 
-fn save(profile: &Path, entries: &[Login]) -> Result<(), String> {
+fn save(profile: &Path, entries: &mut [Login]) -> Result<(), String> {
+    entries.sort_by(|a, b| a.origin.cmp(&b.origin).then(a.username.cmp(&b.username)));
     let plaintext = Zeroizing::new(
         serde_json::to_vec(entries).map_err(|_| "Не удалось подготовить хранилище")?,
     );
@@ -191,14 +233,23 @@ pub fn manage(
     site: &str,
     username: String,
     password: Option<Zeroizing<String>>,
-) -> Result<Vec<(String, String)>, String> {
+    id: Option<String>,
+) -> Result<Vec<VaultRecord>, String> {
     let _gate = VAULT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut entries = load(profile)?;
     if action != "list" {
-        let site = origin(site).ok_or("Укажите HTTPS-адрес сайта")?;
-        let position = entries
-            .iter()
-            .position(|entry| entry.origin == site && entry.username == username);
+        let site = stored_origin(site).ok_or("Укажите HTTP- или HTTPS-адрес сайта")?;
+        let position = id
+            .as_deref()
+            .map(|id| {
+                entries
+                    .iter()
+                    .position(|entry| {
+                        entry.id == id && entry.origin == site && entry.username == username
+                    })
+                    .ok_or("Сохранённый вход больше недоступен")
+            })
+            .transpose()?;
         match action {
             "save" => {
                 let password = password
@@ -207,39 +258,38 @@ pub fn manage(
                 if username.len() > 4096 {
                     return Err("Имя пользователя слишком длинное".into());
                 }
-                if let Some(position) = position {
-                    entries.remove(position);
-                }
-                entries.push(Login {
-                    origin: site,
-                    username,
-                    password: password.to_string(),
+                let duplicate = entries.iter().enumerate().any(|(index, entry)| {
+                    Some(index) != position && entry.key() == (&site, &username, &password)
                 });
+                if duplicate && position.is_some() {
+                    return Err("Этот вариант пароля уже есть в хранилище".into());
+                }
+                if let Some(position) = position {
+                    entries[position].password.zeroize();
+                    entries[position].password.push_str(&password);
+                } else if !duplicate {
+                    entries.push(Login {
+                        id: new_id()?,
+                        origin: site,
+                        username,
+                        password: password.to_string(),
+                    });
+                }
             }
             "remove" => {
                 entries.remove(position.ok_or("Сохранённый вход не найден")?);
             }
             _ => return Err("Неизвестное действие с хранилищем".into()),
         }
-        entries.sort_by(|a, b| a.origin.cmp(&b.origin).then(a.username.cmp(&b.username)));
-        save(profile, &entries)?;
+        save(profile, &mut entries)?;
     }
-    Ok(entries
-        .iter()
-        .map(|entry| (entry.origin.clone(), entry.username.clone()))
-        .collect())
+    Ok(records(&entries))
 }
 
-pub fn accounts(profile: &Path, origin: &str) -> Result<Vec<Account>, String> {
-    Ok(load(profile)?
-        .into_iter()
-        .enumerate()
-        .filter(|(_, item)| item.origin == origin)
-        .map(|(index, item)| Account {
-            index,
-            username: item.username.clone(),
-        })
-        .collect())
+pub fn accounts(profile: &Path, origin: &str) -> Result<Vec<VaultRecord>, String> {
+    let mut entries = load(profile)?;
+    entries.retain(|item| item.origin == origin);
+    Ok(records(&entries))
 }
 
 pub fn import_file(path: &Path) -> Result<PasswordImport, String> {
@@ -258,27 +308,28 @@ pub async fn fill(
     view: Webview,
     profile: &Path,
     site: &str,
-    index: usize,
+    id: &str,
     username: &str,
 ) -> Result<(), String> {
     use webview2_com::ExecuteScriptCompletedHandler;
     let entries = load(profile)?;
     let login = entries
-        .get(index)
-        .filter(|item| item.origin == site && item.username == username)
+        .iter()
+        .find(|item| item.id == id && item.origin == site && item.username == username)
         .ok_or("Пароль для текущего сайта не найден. Откройте список заново.")?;
     let encoded = Zeroizing::new(
-        serde_json::to_string(login).map_err(|_| "Не удалось подготовить заполнение")?,
+        serde_json::to_string(&(&login.origin, &login.username, &login.password))
+            .map_err(|_| "Не удалось подготовить заполнение")?,
     );
     let script = Zeroizing::new(format!(
-        r#"((login) => {{
-        if (window.location.origin !== login.origin) return false;
+        r#"(([origin, username, secret]) => {{
+        if (window.location.origin !== origin) return false;
         const visible = input => input.getClientRects().length && !input.disabled && !input.readOnly;
         const fields = [...document.querySelectorAll('input[type="password"]')].filter(input =>
             visible(input) && input.autocomplete !== 'new-password');
         if (fields.length !== 1) return false;
         const password = fields[0];
-        if (password.form && new URL(password.form.action, location.href).origin !== login.origin) return false;
+        if (password.form && new URL(password.form.action, location.href).origin !== origin) return false;
         const selector = password.form ? 'input[autocomplete="username"], input[type="email"], input[type="text"], input:not([type])' : 'input[autocomplete="username"], input[type="email"]';
         const users = [...(password.form ?? document).querySelectorAll(selector)].filter(visible);
         const user = users.find(input => input.autocomplete === 'username') ?? (users.length === 1 ? users[0] : null);
@@ -286,8 +337,8 @@ pub async fn fill(
             Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
         }};
-        if (user && login.username) set(user, login.username);
-        set(password, login.password);
+        if (user && username) set(user, username);
+        set(password, secret);
         return true;
     }})({encoded})"#,
         encoded = encoded.as_str()
@@ -312,17 +363,77 @@ pub async fn fill(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn csv_preserves_quoted_fields_and_encrypts_locally() {
-        let (entries, skipped) = super::parse("\u{feff}name,url,username,password\r\nExample,https://example.org/login,qa,\"synthetic,example\"\r\nOther,http://example.net/,sample,skip\r\n").unwrap();
+        let (entries, skipped) = parse("\u{feff}name,url,username,password,note\r\nExample,https://example.org/login,qa,\"synthetic,example\",\r\nShort,https://example.net/,missing\r\nOther,http://example.net/,,synthetic-http\r\n").unwrap();
         assert_eq!(skipped, 1);
         assert_eq!(entries[0].origin, "https://example.org");
         assert_eq!(entries[0].password, "synthetic,example");
-        let encrypted = super::protect(b"synthetic test data", true).unwrap();
+        assert_eq!(entries[1].origin, "http://example.net");
+        assert!(entries[1].username.is_empty());
+        assert!(origin(&entries[1].origin).is_none());
+        let encrypted = protect(b"synthetic test data", true).unwrap();
         assert_ne!(encrypted.as_slice(), b"synthetic test data");
         assert_eq!(
-            super::protect(&encrypted, false).unwrap().as_slice(),
+            protect(&encrypted, false).unwrap().as_slice(),
             b"synthetic test data"
         );
+    }
+
+    #[test]
+    fn import_keeps_conflicts_and_reuses_legacy_records() {
+        let dir = std::env::temp_dir().join(format!("aurora-vault-{}", new_id().unwrap()));
+        std::fs::create_dir(&dir).unwrap();
+        let legacy =
+            br#"[{"origin":"https://example.org","username":"qa","password":"synthetic-a"}]"#;
+        crate::core::store::write_file(&dir.join(VAULT_FILE), &protect(legacy, true).unwrap())
+            .unwrap();
+        let file = || {
+            Zeroizing::new(
+            "url,username,password,httpRealm,formActionOrigin,guid\nhttps://example.org/a,qa,synthetic-a,,,\nhttps://example.org/b,qa,synthetic-b,,,\nhttp://example.net/,qa,synthetic-http,,,\nandroid://test,qa,incompatible,,,\n".into()
+        )
+        };
+        let report = import(&dir, file()).unwrap();
+        assert_eq!(
+            (report.imported, report.duplicates, report.skipped),
+            (2, 1, 1)
+        );
+        let repeat = import(&dir, file()).unwrap();
+        assert_eq!(
+            (repeat.imported, repeat.duplicates, repeat.skipped),
+            (0, 3, 1)
+        );
+
+        let site = "https://example.org";
+        let found = accounts(&dir, site).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found[0].id.is_empty());
+        assert_ne!(found[0].id, found[1].id);
+        assert_eq!(found[1].variant, Some(2));
+        manage(
+            &dir,
+            "remove",
+            site,
+            "qa".into(),
+            None,
+            Some(found[0].id.clone()),
+        )
+        .unwrap();
+        manage(
+            &dir,
+            "save",
+            site,
+            "qa".into(),
+            Some(Zeroizing::new("synthetic-c".into())),
+            Some(found[1].id.clone()),
+        )
+        .unwrap();
+        let entries = load(&dir).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].password, "synthetic-c");
+        assert_eq!(entries[1].id, found[1].id);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

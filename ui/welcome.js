@@ -141,7 +141,7 @@ function startWelcome() {
     fields.keep_history = fields.history && retention.checked;
     withImport('Переносим выбранные данные…', async () => summaryText(await core.invoke('import_browser', { id: source.value, fields })));
   });
-  $('welcome-csv').hidden = !isWindows;
+  $('welcome-csv').hidden = $('welcome-password-hint').hidden = !isWindows;
   for (const format of Object.keys(migrationFormats)) {
     const button = $('welcome-' + format);
     const input = $('welcome-' + format + '-file');

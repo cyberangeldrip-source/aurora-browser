@@ -1054,11 +1054,11 @@ async function refreshPasswordAccounts() {
   $('migration-account-list').replaceChildren(...accounts.map(account => {
     const row = document.createElement('div');
     row.className = 'item';
-    const label = toText('span', 'item-text', account.username || 'Без имени пользователя');
+    const label = toText('span', 'item-text', vaultAccountLabel(account));
     const fill = button('Заполнить', 'lock', 'pill', async () => {
       if (id !== state.activeTabId || url !== state.currentUrl) return refreshPasswordAccounts();
       fill.disabled = true;
-      const result = await run('fill_password', account);
+      const result = await run('fill_password', { id: account.id, username: account.username });
       fill.disabled = false;
       if (result) {
         closeLayer();
@@ -1076,11 +1076,22 @@ const migrationFormats = { html: ['import_bookmark_html', 64], csv: ['import_pas
 async function importMigrationFile(format, file) {
   const [command, limit] = migrationFormats[format];
   if (file.size > limit * 1024 * 1024) throw new Error('Файл превышает допустимый размер.');
-  return core.invoke(command, { payload: await file.text() });
+  if (format !== 'csv') return core.invoke(command, { payload: await file.text() });
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let payload;
+  try {
+    payload = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('Не удалось прочитать CSV в кодировке UTF-8.');
+  } finally {
+    bytes.fill(0);
+  }
+  return core.invoke(command, { payload });
 }
 function migrationFileSummary(format, result) {
   return format === 'csv'
-    ? 'Пароли добавлены или обновлены — ' + result.imported + '. Пропущено — ' + result.skipped
+    ? 'Добавлено паролей — ' + result.imported + '. Уже сохранено — ' + result.duplicates +
+      '. Неподдерживаемых или неполных строк — ' + result.skipped + '.'
     : 'Добавлено закладок — ' + result.bookmarks;
 }
 for (const format of Object.keys(migrationFormats)) {

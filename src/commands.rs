@@ -649,11 +649,12 @@ pub async fn password_manage(
     site: String,
     username: String,
     password: Option<String>,
-) -> Result<Vec<(String, String)>, String> {
+    id: Option<String>,
+) -> Result<Vec<migration::passwords::VaultRecord>, String> {
     let dir = app.state::<AppState>().data_dir.clone();
     let password = password.map(zeroize::Zeroizing::new);
     tauri::async_runtime::spawn_blocking(move || {
-        migration::passwords::manage(&dir, &action, &site, username, password)
+        migration::passwords::manage(&dir, &action, &site, username, password, id)
     })
     .await
     .map_err(|_| "Ошибка хранилища")?
@@ -691,7 +692,7 @@ pub async fn browser_extensions(
 #[tauri::command]
 pub async fn password_accounts(
     app: AppHandle,
-) -> Result<Vec<migration::passwords::Account>, String> {
+) -> Result<Vec<migration::passwords::VaultRecord>, String> {
     let Some((site, _)) = password_target(&app) else {
         return Ok(Vec::new());
     };
@@ -703,11 +704,11 @@ pub async fn password_accounts(
 
 #[cfg(windows)]
 #[tauri::command]
-pub async fn fill_password(app: AppHandle, index: usize, username: String) -> Result<(), String> {
+pub async fn fill_password(app: AppHandle, id: String, username: String) -> Result<(), String> {
     let (site, view) =
         password_target(&app).ok_or("Откройте обычную вкладку с HTTPS-страницей входа")?;
     let profile = app.state::<AppState>().data_dir.clone();
-    migration::passwords::fill(view, &profile, &site, index, &username).await
+    migration::passwords::fill(view, &profile, &site, &id, &username).await
 }
 
 #[tauri::command]

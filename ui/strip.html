@@ -238,7 +238,7 @@
               </div>
               <input type="file" id="migration-html-file" accept=".html,.htm,text/html" hidden>
               <input type="file" id="migration-csv-file" accept=".csv,text/csv" hidden>
-              <p class="muted" id="migration-vault-info">Aurora хранит пароли локально с защитой Windows. После переноса удалите CSV, если он больше не нужен.</p>
+              <p class="muted" id="migration-vault-info">Экспортируйте пароли в исходном браузере и выберите CSV. Aurora сохраняет их в локальном хранилище с защитой Windows. После переноса удалите CSV, если он больше не нужен.</p>
               <p class="muted transfer-status" id="migration-file-status" role="status" hidden></p>
             </section>
             <section class="settings-card transfer-card" id="migration-accounts">
@@ -285,10 +285,11 @@
             <section class="settings-card transfer-card" id="vault-panel">
               <h2>Сохранённые входы</h2>
               <form class="manage-form" id="vault-save" autocomplete="off">
-                <input class="filter-input" id="vault-site" type="url" aria-label="HTTPS-адрес сайта" placeholder="https://example.org" required>
+                <input class="filter-input" id="vault-site" type="url" aria-label="Адрес сайта" placeholder="https://example.org" required>
                 <input class="filter-input" id="vault-user" aria-label="Имя аккаунта" placeholder="Имя аккаунта">
                 <input class="filter-input" id="vault-secret" aria-label="Пароль" type="password" placeholder="Пароль" autocomplete="new-password" required>
                 <button class="pill" type="submit">Сохранить</button>
+                <button class="pill" id="vault-cancel" type="button" hidden>Отмена</button>
               </form>
               <input class="filter-input" id="vault-filter" type="search" aria-label="Найти сохранённый вход" placeholder="Найти вход по сайту или имени">
               <div class="collection" id="vault-list"></div>
@@ -407,10 +408,11 @@
             <div class="welcome-actions welcome-file-actions">
               <button type="button" class="pill" id="welcome-import" data-icon="import" disabled>Перенести выбранное</button>
               <button type="button" class="pill" id="welcome-html">Закладки HTML</button>
-              <button type="button" class="pill" id="welcome-csv">Пароли CSV</button>
+              <button type="button" class="pill" id="welcome-csv" title="Выбрать CSV, экспортированный из менеджера паролей исходного браузера">Пароли CSV</button>
               <input type="file" id="welcome-html-file" accept=".html,.htm,text/html" hidden>
               <input type="file" id="welcome-csv-file" accept=".csv,text/csv" hidden>
             </div>
+            <p class="welcome-status" id="welcome-password-hint">Для паролей выберите CSV из менеджера паролей исходного браузера.</p>
             <p class="welcome-status" id="welcome-import-status" role="status" hidden></p>
           </section>
           <p class="welcome-status" id="welcome-error" role="alert" hidden></p>
